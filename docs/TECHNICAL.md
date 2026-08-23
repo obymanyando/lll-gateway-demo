@@ -1,3 +1,7 @@
+---
+title: Technical notes
+---
+
 # Technical notes
 
 Internal notes for explaining this codebase out loud. Covers slices 1-7:

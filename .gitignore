@@ -6,3 +6,7 @@ node_modules/
 *.sqlite
 dist/
 .DS_Store
+
+# Jekyll build artefacts from the docs site (GitHub builds it, not us).
+docs/_site/
+docs/.jekyll-cache/

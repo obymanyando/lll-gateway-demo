@@ -1,0 +1,18 @@
+# GitHub Pages config. The site is built natively by GitHub from this folder;
+# there is no build step to run locally and no CI workflow to maintain.
+title: LLM gateway
+description: >-
+  A small TypeScript gateway for LLM traffic: rule-based routing, guardrails,
+  cost accounting with budget enforcement, a request log, and RAG.
+
+# A theme GitHub Pages supports directly, so no Gemfile is needed.
+theme: jekyll-theme-cayman
+
+# Apply the layout from here rather than adding front matter to USER.md and
+# TECHNICAL.md. Those files stay plain markdown, readable in the repo and on
+# a phone, and the site picks them up unchanged.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

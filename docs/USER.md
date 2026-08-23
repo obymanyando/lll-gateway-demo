@@ -1,3 +1,7 @@
+---
+title: Running and calling the gateway
+---
+
 # Running and calling the gateway
 
 This covers the gateway as it exists today: provider routing, guardrails, a
