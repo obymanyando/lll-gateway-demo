@@ -1,8 +1,8 @@
 # Running and calling the gateway
 
-This covers the gateway as it exists today: provider routing, guardrails, and
-a request log. Cost/budget enforcement, RAG, and a dashboard are not built
-yet — see "what's next" at the end.
+This covers the gateway as it exists today: provider routing, guardrails, a
+request log, and cost accounting with budget enforcement. RAG and a
+dashboard are not built yet — see "what's next" at the end.
 
 ## Prerequisites
 
@@ -32,6 +32,7 @@ npm test             # plain node:assert checks against the guardrail rules
 | `PORT` | `8080` | no |
 | `GATEWAY_API_KEY` | — | **yes** — callers send this as `Authorization: Bearer <value>` |
 | `DB_PATH` | `gateway.db` | no — SQLite file for the request log |
+| `MONTHLY_BUDGET_EUR` | `25` | no — per-API-key monthly spend ceiling, in EUR |
 | `ANTHROPIC_API_KEY` | — | at least one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is required |
 | `OPENAI_API_KEY` | — | see above |
 | `ANTHROPIC_MODEL_CHEAP` | `claude-haiku-4-5-20251001` | no |
@@ -81,6 +82,7 @@ Success response (`200`):
 {
   "text": "...",
   "usage": { "inputTokens": 14, "outputTokens": 9 },
+  "costEur": 0.000057,
   "routing": {
     "provider": "anthropic",
     "model": "claude-haiku-4-5-20251001",
@@ -97,7 +99,9 @@ Success response (`200`):
 `"redact:<rule ids>"` (comma-joined) when one or more rules redacted
 something in the input or the output. `redactedBy` is the same rule ids as
 a plain array. See "Guardrails" below for what can fire and what a blocked
-request looks like.
+request looks like. `costEur` is the price-table cost for this request's
+real token usage — `null` if the model isn't in the price table — see "Cost
+and budget" below.
 
 Error response shape: `{ "error": { "kind": "...", ... } }`. If the request
 made it past routing before failing, the response also carries `routing`,
@@ -199,6 +203,77 @@ curl -s -X POST localhost:8080/v1/chat \
 
 That's a `403`.
 
+## Cost and budget
+
+Every successful request is priced from the real token counts the provider
+reports — not an estimate — using an EUR-per-1000-tokens table for each
+configured model. That price is returned as `costEur` in the response (see
+above) and written to the request log.
+
+Each API key has a monthly budget, `MONTHLY_BUDGET_EUR` (default `25`, one
+value for the one static key in this version). Before anything else happens
+— before guardrails, routing, or a provider is called — the gateway sums
+that key's spend for the current calendar month (UTC) and checks it against
+the budget. Over budget, the request is refused outright:
+
+```json
+{
+  "error": {
+    "kind": "over_budget",
+    "message": "Monthly budget for this API key is exhausted",
+    "budgetEur": 25,
+    "spentEur": 25.014,
+    "remainingEur": 0
+  }
+}
+```
+
+That's a `429`. Nothing was called, so nothing was spent by refusing it.
+
+**What costs money and what doesn't.** A request only spends money if the
+provider was actually called. A blocked or refused request never reaches
+that far — an input-guardrail block (403), a budget refusal (429), and a
+validation failure (400) all cost nothing. The one exception is an
+output-guardrail block: the provider was already called and the text
+generated before the guardrail withheld it, so that one still has a real
+`costEur`, even though you never see the text.
+
+### `GET /admin/stats`
+
+Requires `Authorization: Bearer <GATEWAY_API_KEY>`, same as chat. Reports
+month-to-date figures, all read from the request log — there's no separate
+metrics store.
+
+```bash
+curl -s localhost:8080/admin/stats \
+  -H 'authorization: Bearer YOUR_GATEWAY_API_KEY'
+```
+
+```json
+{
+  "since": "2026-08-01T00:00:00.000Z",
+  "requests": { "total": 42, "blocked": 3, "blockRate": 0.071429 },
+  "p95LatencyMs": 1180,
+  "spendByModel": [
+    { "model": "claude-sonnet-4-6", "costEur": 0.031402 },
+    { "model": "claude-haiku-4-5-20251001", "costEur": 0.004881 }
+  ],
+  "spendByKey": [
+    {
+      "apiKey": "dev-local-key-change-me",
+      "costEur": 0.036283,
+      "budgetEur": 25,
+      "budgetRemainingEur": 24.963717
+    }
+  ]
+}
+```
+
+`requests.blocked` counts only guardrail blocks (HTTP 403), not budget
+refusals. `p95LatencyMs` is over successful (200) requests only, and is
+`null` if none happened this month. `spendByModel` and `spendByKey` only
+list models/keys that actually spent something.
+
 ## HTTP status codes
 
 | status | when |
@@ -207,7 +282,7 @@ That's a `403`.
 | 400 | request body failed validation, or `provider` names a vendor with no API key set |
 | 401 | missing or wrong `GATEWAY_API_KEY` |
 | 403 | a guardrail blocked the request (see "Guardrails" above) |
-| 429 | the provider rate-limited the gateway |
+| 429 | monthly budget for this API key is exhausted (see "Cost and budget" above); also returned when the provider rate-limited the gateway — same status, `error.kind` tells them apart (`over_budget` vs `rate_limited`) |
 | 502 | the provider rejected the gateway's credentials, or returned an error/unparseable response |
 | 504 | the HTTP call to the provider failed outright (network error) |
 
@@ -227,17 +302,16 @@ cache_hit, status`.
 
 `guardrail_verdict` and `blocked_reason` are filled in on every row where
 guardrails ran (`"allow"`, `"redact:<rule ids>"`, or `"block:<rule id>"`, with
-`blocked_reason` set only on a block). `cost_eur` and `cache_hit` are still
-reserved columns — they exist in the table today but are always written
-`NULL`. Slice 5 (cost/budget) fills `cost_eur`; a possible later stretch
-fills `cache_hit`.
+`blocked_reason` set only on a block). `cost_eur` is live too — the same
+value returned as `costEur` in the response, `NULL` on rows that never
+reached a provider or priced an unknown model. `cache_hit` is still a
+reserved column: it exists in the table today but is always written `NULL`;
+a possible later stretch fills it in.
 
 ## What's next
 
 Not built yet, per `PLAN.md`:
 
-- **Slice 5** — cost and budget: per-request cost in EUR, a monthly budget
-  per API key enforced with 429, a `GET /admin/stats` endpoint.
 - **Slice 6** — `POST /v1/rag/query`, a retrieval endpoint over embedded
   markdown chunks.
 - **Slice 7** — a static HTML dashboard.

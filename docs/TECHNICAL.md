@@ -1,15 +1,16 @@
 # Technical notes
 
-Internal notes for explaining this codebase out loud. Covers slices 1-4:
-provider adapters, the router, the SQLite request log, and guardrails. Cost,
-RAG, and the dashboard do not exist yet — see "what's next" at the end.
+Internal notes for explaining this codebase out loud. Covers slices 1-5:
+provider adapters, the router, the SQLite request log, guardrails, and cost
+accounting with budget enforcement. RAG and the dashboard do not exist yet —
+see "what's next" at the end.
 
 ## Architecture overview
 
-One Fastify process. One route that does real work: `POST /v1/chat`. A
-`/health` route for a liveness check. No database migrations, no queue, no
-background worker. Everything happens synchronously inside the request
-handler, including the SQLite write.
+One Fastify process. Two routes that do real work: `POST /v1/chat` and
+`GET /admin/stats`. A `/health` route for a liveness check. No database
+migrations, no queue, no background worker. Everything happens
+synchronously inside the request handler, including the SQLite write.
 
 Request flow through `POST /v1/chat`:
 
@@ -23,23 +24,28 @@ Request flow through `POST /v1/chat`:
 3. **Provider resolution** — `getProvider(body.provider)` looks up the named
    provider, or the first configured one if the caller didn't name one.
    Naming a provider that isn't configured is also a 400, also logged.
-4. **Input guardrails** — `guardInput()` runs PII redaction and the
+4. **Budget check** — `spendSince(apiKey, monthStartIso())` sums this key's
+   month-to-date cost straight out of the request log. If it's already at or
+   over `budgetEurFor(apiKey)`, the request is refused: 429, logged, before
+   guardrails, routing, or any provider call — see "Cost and budget" below.
+5. **Input guardrails** — `guardInput()` runs PII redaction and the
    prompt-injection deny list over every message and the system prompt. A
    block here returns 403 immediately, logged, before routing or any
    provider call happens — see "Guardrails" below.
-5. **Routing decision** — `route()` in `router.ts` turns the (already
+6. **Routing decision** — `route()` in `router.ts` turns the (already
    redacted) request into a `RouteDecision`: which provider, which model,
    which rule fired, why.
-6. **Provider HTTP call** — `provider.complete(model, req)` does the real
+7. **Provider HTTP call** — `provider.complete(model, req)` does the real
    `fetch` to the vendor. It never throws; it returns a `CompletionResult`.
-7. **Output guardrails** — `guardOutput()` scans the response text for
+8. **Output guardrails** — `guardOutput()` scans the response text for
    secret patterns before it goes back to the caller. A block here is
-   logged too, but the provider call already happened, so usage is known.
-8. **Log row** — exactly one `logRequest()` call, whichever way the request
+   logged too, but the provider call already happened, so usage — and cost —
+   is known.
+9. **Log row** — exactly one `logRequest()` call, whichever way the request
    went.
-9. **Response** — success returns
-   `{ text, usage, routing, guardrails, latencyMs }`. Failure returns
-   `{ error, routing }` (routing only if we got past step 5).
+10. **Response** — success returns
+    `{ text, usage, costEur, routing, guardrails, latencyMs }`. Failure
+    returns `{ error, routing }` (routing only if we got past step 6).
 
 The property worth defending under questioning: **every outcome writes
 exactly one log row.** Validation failure, unconfigured provider, provider
@@ -72,8 +78,12 @@ configured by reading the keys of the `providers` map — it does not ping the
 vendors.
 
 **`src/db.ts`** — owns the SQLite connection, the `requests` table DDL, the
-insert statement, and a typed read helper. This is the only file that talks
-to `better-sqlite3`.
+insert statement, and the read helpers. This is the only file that talks to
+`better-sqlite3`. Besides `listRecentRequests()`, slice 5 adds the aggregate
+readers used for budget enforcement and `/admin/stats`: `spendSince()`,
+`spendByModelSince()`, `spendByKeySince()`, `requestCountsSince()`, and
+`successLatenciesSince()`. Same pattern as the row reader — every query
+result crosses a zod schema before it leaves this file.
 
 **`src/guardrails.ts`** — the input and output rule lists, `applyRules()`
 (the fold that runs a rule list over one string), and the two entry points
@@ -101,10 +111,20 @@ quirks (system-as-field vs. system-as-message, `input_tokens` vs.
 of whichever vendors have an API key set, plus `getProvider()` and
 `defaultProvider()` for looking one up.
 
+**`src/pricing.ts`** — slice 5. The `PRICES_EUR_PER_1K` table,
+`computeCostEur()`, `budgetEurFor()`, and `monthStartIso()`. No I/O, no
+state — pure functions over numbers, same shape as `router.ts`. See "Cost
+and budget" below.
+
 **`src/routes/chat.ts`** — the `POST /v1/chat` handler described above, plus
 `bodySchema` (the request contract), `verdictLabel()` (turns a `redactedBy`
 list into the `"allow"` / `"redact:..."` string stored and returned), and
 `statusFor()` (the `ProviderError`-to-HTTP-code mapping).
+
+**`src/routes/admin.ts`** — slice 5. `GET /admin/stats`, behind the same
+`requireApiKey` preHandler as chat. Pulls everything from the `db.ts`
+aggregate readers and `pricing.ts`; no metrics store of its own. See "Cost
+and budget" below.
 
 ## Routing
 
@@ -208,6 +228,49 @@ though today's output rules only ever redact — but if it ever fired, the
 provider call already happened, so usage would be known and logged even
 though the text never reaches the caller.
 
+## Cost and budget
+
+**The price table.** `PRICES_EUR_PER_1K` in `pricing.ts` is a plain object,
+EUR per 1000 tokens, keyed by model id, with an `{ input, output }` pair for
+each of the four configured models. It's approximate list pricing at time of
+writing, in code rather than a database, so a vendor price change is a
+one-line edit. `computeCostEur(model, usage)` looks the model up and returns
+`inputTokens * price.input / 1000 + outputTokens * price.output / 1000` — or
+`null` if the model isn't in the table. That lookup, and why it returns
+`null` instead of throwing or guessing, is worth reading with
+`noUncheckedIndexedAccess` in mind — see "TypeScript ideas" below.
+
+**Cost comes from real usage, always.** `computeCostEur()` is only ever
+called with `value.usage` — the token counts the provider actually reported
+for that call, never an estimate. The router's `estimateInputTokens()` picks
+a tier before the call happens; it has no role in pricing afterward.
+
+**The log is the ledger.** There's no separate spend table. `spendSince()` in
+`db.ts` runs `SELECT SUM(cost_eur) ... WHERE api_key = ? AND ts >= ?`
+straight against the `requests` table — the same rows written for every
+outcome. Enforcement and reporting both read from that one sum; there's
+nothing else that could disagree with it.
+
+**Enforcement vs. reporting — two different jobs on the same data.** The 429
+check in `routes/chat.ts` (step 4 above) is the FinOps enforcement: it reads
+one key's spend, compares it to `budgetEurFor(apiKey)`, and refuses before
+any money can be spent this request. `GET /admin/stats` in `routes/admin.ts`
+is pure reporting — it doesn't gate anything, it just reads the same log
+from a wider angle (across all keys and models, plus request counts and
+p95 latency) so the numbers behind the enforcement are visible.
+`budgetEurFor()` returns `env.MONTHLY_BUDGET_EUR` for any key today, because
+there is exactly one static key in v0; a multi-tenant setup would look the
+key up instead, and nothing else in either route would need to change.
+
+**Which paths cost money.** A request only ever spends money if the provider
+was actually called: the success path and the output-guardrail-block path
+(the call happened, the text was withheld, but the tokens were still
+generated — see "Guardrails" above). Every other outcome is free by
+construction: input-block (403, refused before the provider call), over
+budget (429, refused before the provider call), and validation/provider-
+lookup failures (400, never got that far). `cost_eur` is `null` on all of
+those rows.
+
 ## SQLite schema
 
 One table, `requests`, created in `db.ts` with `CREATE TABLE IF NOT EXISTS`
@@ -226,7 +289,7 @@ writes don't block each other.
 | `tier` | TEXT | yes, when known; `null` before routing |
 | `input_tokens` | INTEGER | yes, only on success (real usage from the provider) |
 | `output_tokens` | INTEGER | yes, only on success |
-| `cost_eur` | REAL | **always NULL today** — slice 5 (cost/budget) fills this |
+| `cost_eur` | REAL | yes, on success and output-guardrail-block rows, when the model is in the price table; `null` on input-block, over-budget, and validation/provider-lookup rows, and on any row for an unpriced model |
 | `latency_ms` | INTEGER | yes — on success, the provider call's latency (`value.latencyMs`); on failures, time from handler entry |
 | `guardrail_verdict` | TEXT | yes, whenever guardrails ran — `"allow"`, `"redact:<rule ids>"`, or `"block:<rule id>"`; `null` on validation/provider-lookup failures that happen before guardrails run |
 | `blocked_reason` | TEXT | yes, only when a guardrail blocked the request; `null` otherwise |
@@ -234,12 +297,12 @@ writes don't block each other.
 | `status` | INTEGER | yes, always — the HTTP status code returned |
 
 The insert statement (`insertStmt` in `db.ts`) still hard-codes `NULL` for
-`cost_eur` and `cache_hit` — those two columns aren't in `RequestLogEntry`
-yet. `guardrail_verdict` and `blocked_reason` are, as of slice 4: every
-handler branch after the guardrail checks pass a real value (or an explicit
-`null` for outcomes that happen before guardrails run, like bad-request
-validation). The full schema was created up front specifically so slices 4
-and 5 are a column-fill, not a migration.
+`cache_hit` — that's the only column left out of `RequestLogEntry`.
+`cost_eur`, `guardrail_verdict`, and `blocked_reason` are all real fields on
+`RequestLogEntry` now: every handler branch in `routes/chat.ts` passes an
+explicit value, `null` included, for the outcomes those columns don't apply
+to. The full schema was created up front specifically so slices 4 and 5 were
+a column-fill, not a migration.
 
 ## Error taxonomy
 
@@ -277,6 +340,16 @@ policy refusing the request, not a vendor failure — folding it into
 `ProviderError` would make `statusFor()`'s switch responsible for a case
 that has nothing to do with a provider, and would force every provider
 adapter to know about guardrails.
+
+**429 (`over_budget`) is the same story, and it's easy to confuse with the
+provider's own 429.** `statusFor()`'s `rate_limited` case also returns 429 —
+but that's the *provider* rate-limiting the gateway, mapped through
+`classifyHttp()` from a vendor HTTP response. `over_budget` never touches
+`statusFor()`; `routes/chat.ts` returns it directly, before any provider
+call happens. Same HTTP status code, opposite actor: `rate_limited` means
+"the vendor said slow down", `over_budget` means "the gateway is refusing
+its own caller". Worth saying out loud precisely because the status code
+doesn't tell them apart — `error.kind` does.
 
 ## TypeScript ideas used here
 
@@ -337,12 +410,21 @@ every member is covered. Add a sixth `ProviderError` member later and this
 function stops compiling until the new case is added — the compiler
 performing part of the code review.
 
+**`noUncheckedIndexedAccess` again, in `pricing.ts`.** Same flag as the
+`openai.ts` example above, different flavor: `PRICES_EUR_PER_1K[model]` is
+typed `{ input: number; output: number } | undefined`, because `model` is a
+plain `string` and the compiler has no way to know it's a key that exists in
+the table. It can't — the model id came from a request or from `.env`, not
+from a literal in this file. `computeCostEur()` has to check
+`price === undefined` before using it, and that check is exactly the
+"unpriced model" case: it returns `null` instead of crashing or silently
+pricing at zero. The type system is forcing the right business behavior,
+not just satisfying the compiler.
+
 ## What's next
 
 Per `PLAN.md`, not yet built:
 
-- **Slice 5** — cost and budget: a price table, `cost_eur` filled in, a
-  per-key monthly budget enforced with 429, `GET /admin/stats`.
 - **Slice 6** — a RAG endpoint (`POST /v1/rag/query`), brute-force cosine
   similarity over embedded markdown chunks stored in SQLite.
 - **Slice 7** — a static HTML dashboard reading `/admin/stats`.
