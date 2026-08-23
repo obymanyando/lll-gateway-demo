@@ -1,15 +1,17 @@
 # Technical notes
 
-Internal notes for explaining this codebase out loud. Covers slices 1-6:
+Internal notes for explaining this codebase out loud. Covers slices 1-7:
 provider adapters, the router, the SQLite request log, guardrails, cost
-accounting with budget enforcement, and a RAG endpoint over embedded markdown
-chunks. The dashboard does not exist yet — see "what's next" at the end.
+accounting with budget enforcement, a RAG endpoint over embedded markdown
+chunks, and a static dashboard over `/admin/stats`. Every planned slice is
+built — see "what's next" at the end for the one thing left.
 
 ## Architecture overview
 
 One Fastify process. Three routes that do real work: `POST /v1/chat`,
 `GET /admin/stats`, and `POST /v1/rag/query`. A `/health` route for a
-liveness check. No database migrations, no queue, no background worker.
+liveness check, and `GET /dashboard` serving one static HTML page — see
+"Dashboard" below. No database migrations, no queue, no background worker.
 Everything happens synchronously inside the request handler, including the
 SQLite write. RAG ingestion is a separate one-off script (`npm run ingest`),
 not part of the request path.
@@ -145,6 +147,9 @@ HTTP route.
 **`src/routes/rag.ts`** — slice 6. The `POST /v1/rag/query` handler. See
 "RAG" below.
 
+**`src/routes/dashboard.ts`** — slice 7. `GET /dashboard`, `readFile`s
+**`public/dashboard.html`** and returns it. See "Dashboard" below.
+
 ## Routing
 
 Three rules, evaluated top to bottom in `router.ts`, first match wins:
@@ -258,6 +263,17 @@ one-line edit. `computeCostEur(model, usage)` looks the model up and returns
 `null` if the model isn't in the table. That lookup, and why it returns
 `null` instead of throwing or guessing, is worth reading with
 `noUncheckedIndexedAccess` in mind — see "TypeScript ideas" below.
+
+**Versioned ids vs. table keys — a real bug, fixed.** Providers report
+versioned model ids at call time (`"gpt-4o-mini-2024-07-18"`), but the price
+table is keyed by base id (`"gpt-4o-mini"`). `priceFor()` tries an exact
+match first, then falls back to the *longest* table key the reported id
+starts with. Longest matters: `"gpt-4o"` is also a prefix of
+`"gpt-4o-mini-2024-07-18"`, so a naive first-match (or shortest-match) scan
+would price a mini call at the full `gpt-4o` rate. This was found live — an
+OpenAI chat completion came back with `costEur: null` before the fix,
+because the unversioned lookup missed entirely. An id that matches no table
+key at all, versioned or not, still prices as `null`, same as before.
 
 **Cost comes from real usage, always.** `computeCostEur()` is only ever
 called with `value.usage` — the token counts the provider actually reported
@@ -383,6 +399,39 @@ the query pipeline in `routes/rag.ts` wouldn't need to change shape, only
 what those two functions do internally. Hybrid retrieval (keyword + vector)
 and a reranking pass are the next quality lever after that, and neither
 exists here — both are future work, not implied by anything in this slice.
+
+## Dashboard
+
+**One static file, no framework.** `public/dashboard.html` is inline CSS
+and vanilla JS — no build step, no charting library. It renders three plain
+tables: requests (total / blocked / block rate / p95 latency), spend by
+model, and spend by key (with budget and remaining). No charts, because a
+table of numbers is what you'd want to defend under questioning, and a
+charting dependency isn't.
+
+**Why a route instead of a static-file plugin.** `registerDashboardRoute()`
+in `routes/dashboard.ts` is one `app.get` handler that `readFile`s the HTML
+off disk and sends it, on every request. That's a deliberate trade: a real
+static-file plugin (`@fastify/static`) would be the normal way to do this,
+but it's a dependency to explain for one file. Reading from disk per
+request also means an edit to `dashboard.html` shows up on the next reload
+with no server restart — a small dev-experience win that falls out of the
+simple approach for free.
+
+**Why the page is public but the data isn't.** `GET /dashboard` has no
+`requireApiKey` preHandler — the HTML itself carries no data, so there's
+nothing on that route worth protecting. The page asks the visitor for the
+gateway API key in a plain `<input>`, keeps it in `localStorage` for
+convenience across reloads, and sends it as `Authorization: Bearer` on every
+call to `/admin/stats` — the same auth-gated endpoint `curl` uses, behind
+the same `requireApiKey` check as chat. The key never leaves that browser;
+the dashboard makes no other network call.
+
+**Refresh, not push.** Pressing "Load" fetches once and starts a
+`setInterval` that re-fetches `/admin/stats` every 10 seconds. No
+WebSocket, no server-sent events — polling a `GET` endpoint is the boring
+choice and the endpoint is already cheap (it's a handful of `SELECT`s over
+the request log).
 
 ## SQLite schema
 
@@ -536,7 +585,7 @@ not just satisfying the compiler.
 
 ## What's next
 
-Per `PLAN.md`, not yet built:
+All planned slices (1-7) are built. Per `PLAN.md`, what's left:
 
-- **Slice 7** — a static HTML dashboard reading `/admin/stats`.
 - **Stretch** — an exact-hash response cache, filling in `cache_hit`.
+- **Demo-prep hour** — rehearsing the walkthrough, not a code change.

@@ -1,9 +1,9 @@
 # Running and calling the gateway
 
 This covers the gateway as it exists today: provider routing, guardrails, a
-request log, cost accounting with budget enforcement, and a RAG endpoint
-over your own markdown docs. A dashboard is not built yet — see "what's
-next" at the end.
+request log, cost accounting with budget enforcement, a RAG endpoint over
+your own markdown docs, and a dashboard over it all. See "what's next" at
+the end for the one thing left.
 
 ## Prerequisites
 
@@ -409,8 +409,24 @@ reached a provider or priced an unknown model. `cache_hit` is still a
 reserved column: it exists in the table today but is always written `NULL`;
 a possible later stretch fills it in.
 
+## Dashboard
+
+Open `http://localhost:8080/dashboard` in a browser. Paste the gateway API
+key into the box and press **Load**. It shows month-to-date requests
+(total, blocked, block rate, p95 latency), spend by model, and spend by key
+(with budget and remaining) — the same numbers as `GET /admin/stats`, as
+plain tables. After the first Load it refreshes itself every 10 seconds.
+
+The key you paste in is stored in that browser's `localStorage` so you
+don't have to re-enter it on every reload; it stays on your device and is
+only ever sent to this gateway, as the same `Authorization: Bearer` header
+`curl` uses. The `/dashboard` page itself needs no key to open — it's just
+HTML — but it can't show you anything until you give it one, because
+`/admin/stats` still requires it.
+
 ## What's next
 
-Not built yet, per `PLAN.md`:
+All planned slices are built. Per `PLAN.md`, what's left:
 
-- **Slice 7** — a static HTML dashboard.
+- **Stretch** — an exact-hash response cache (would show up as `cache_hit`
+  in the request log).
