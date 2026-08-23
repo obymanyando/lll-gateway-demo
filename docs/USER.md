@@ -1,9 +1,9 @@
 # Running and calling the gateway
 
 This covers the gateway as it exists today: provider routing, guardrails, a
-request log, cost accounting with budget enforcement, a RAG endpoint over
-your own markdown docs, and a dashboard over it all. See "what's next" at
-the end for the one thing left.
+request log, cost accounting with budget enforcement, an exact-hash response
+cache, a RAG endpoint over your own markdown docs, and a dashboard over it
+all. Nothing planned is left to build — see "what's next" at the end.
 
 ## Prerequisites
 
@@ -93,6 +93,7 @@ Success response (`200`):
     "reason": "no routing rule matched; defaulting to the cheap tier"
   },
   "guardrails": { "verdict": "allow", "redactedBy": [] },
+  "cacheHit": false,
   "latencyMs": 812
 }
 ```
@@ -103,7 +104,8 @@ something in the input or the output. `redactedBy` is the same rule ids as
 a plain array. See "Guardrails" below for what can fire and what a blocked
 request looks like. `costEur` is the price-table cost for this request's
 real token usage — `null` if the model isn't in the price table — see "Cost
-and budget" below.
+and budget" below. `cacheHit` says whether this response came from the
+response cache instead of a provider call — see "Response cache" below.
 
 Error response shape: `{ "error": { "kind": "...", ... } }`. If the request
 made it past routing before failing, the response also carries `routing`,
@@ -276,6 +278,35 @@ refusals. `p95LatencyMs` is over successful (200) requests only, and is
 `null` if none happened this month. `spendByModel` and `spendByKey` only
 list models/keys that actually spent something.
 
+## Response cache
+
+Send the exact same request twice and the second call is a cache hit:
+instant, and free.
+
+```bash
+curl -s -X POST localhost:8080/v1/chat \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer YOUR_GATEWAY_API_KEY' \
+  -d '{"messages":[{"role":"user","content":"Name the largest planet, one word."}],"maxTokens":30}'
+```
+
+Run that exact same curl again and the response comes back with
+`"cacheHit": true`, `"costEur": 0`, and `latencyMs` around 1 — no provider
+was called the second time.
+
+"Exact same" means the same routed model, the same messages and system
+prompt (after redaction), the same `maxTokens`, and the same `temperature`.
+Change any of those — even reword the message — and it's a miss, priced and
+called normally.
+
+A cache hit still has to pass the monthly budget check and the input
+guardrails, same as any other request, so it never gets around policy — the
+only thing it skips is the provider call.
+
+The cache lives in memory, so it empties every time the server restarts and
+has no size limit. That is fine for a demo, and `docs/TECHNICAL.md` says
+plainly what a production version would need instead.
+
 ## RAG
 
 `POST /v1/rag/query` answers questions from your own markdown docs, with
@@ -405,9 +436,10 @@ cache_hit, status`.
 guardrails ran (`"allow"`, `"redact:<rule ids>"`, or `"block:<rule id>"`, with
 `blocked_reason` set only on a block). `cost_eur` is live too — the same
 value returned as `costEur` in the response, `NULL` on rows that never
-reached a provider or priced an unknown model. `cache_hit` is still a
-reserved column: it exists in the table today but is always written `NULL`;
-a possible later stretch fills it in.
+reached a provider or priced an unknown model. `cache_hit` is live as well —
+`1` or `0` on every `/v1/chat` completion, `NULL` on RAG rows and on
+anything that never reached a completion. No column in this table is
+reserved any more.
 
 ## Dashboard
 
@@ -424,9 +456,15 @@ only ever sent to this gateway, as the same `Authorization: Bearer` header
 HTML — but it can't show you anything until you give it one, because
 `/admin/stats` still requires it.
 
+The dashboard and the request log are both empty on a fresh install. Run
+`bash scripts/seed.sh` (with the server up) to populate them with ~20
+varied requests — misses, cache hits, every routing rule, both providers,
+redactions, blocks, validation failures, and RAG queries — so there's
+something to look at.
+
 ## What's next
 
-All planned slices are built. Per `PLAN.md`, what's left:
-
-- **Stretch** — an exact-hash response cache (would show up as `cache_hit`
-  in the request log).
+Everything planned is built, cache included. `DEMO.md` has a six-step
+walkthrough of the whole gateway, with the curl for each step and the one
+sentence to say while it runs — that's the reference for demoing this, not
+this file.

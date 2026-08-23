@@ -3,8 +3,9 @@
 Internal notes for explaining this codebase out loud. Covers slices 1-7:
 provider adapters, the router, the SQLite request log, guardrails, cost
 accounting with budget enforcement, a RAG endpoint over embedded markdown
-chunks, and a static dashboard over `/admin/stats`. Every planned slice is
-built — see "what's next" at the end for the one thing left.
+chunks, and a static dashboard over `/admin/stats` — plus the stretch goal,
+an exact-hash response cache. Nothing is left on the plan; see "what's next"
+at the end.
 
 ## Architecture overview
 
@@ -39,17 +40,26 @@ Request flow through `POST /v1/chat`:
 6. **Routing decision** — `route()` in `router.ts` turns the (already
    redacted) request into a `RouteDecision`: which provider, which model,
    which rule fired, why.
-7. **Provider HTTP call** — `provider.complete(model, req)` does the real
-   `fetch` to the vendor. It never throws; it returns a `CompletionResult`.
-8. **Output guardrails** — `guardOutput()` scans the response text for
+7. **Cache lookup** — `cacheKey()` hashes the routed model, the redacted
+   messages/system, `maxTokens`, and `temperature`; `cacheGet()` checks the
+   in-memory store. A hit skips straight to the response — no provider call,
+   `costEur: 0` — see "Response cache" below. This runs *after* budget and
+   guardrails on purpose: a hit must not be a way around policy.
+8. **Provider HTTP call** — on a miss, `provider.complete(model, req)` does
+   the real `fetch` to the vendor. It never throws; it returns a
+   `CompletionResult`.
+9. **Output guardrails** — `guardOutput()` scans the response text for
    secret patterns before it goes back to the caller. A block here is
    logged too, but the provider call already happened, so usage — and cost —
    is known.
-9. **Log row** — exactly one `logRequest()` call, whichever way the request
-   went.
-10. **Response** — success returns
-    `{ text, usage, costEur, routing, guardrails, latencyMs }`. Failure
-    returns `{ error, routing }` (routing only if we got past step 6).
+10. **Cache store** — `cacheSet()` saves the output-guardrail-approved text
+    under the key from step 7, so a later identical request can hit.
+11. **Log row** — exactly one `logRequest()` call, whichever way the request
+    went.
+12. **Response** — success returns
+    `{ text, usage, costEur, routing, guardrails, cacheHit, latencyMs }`.
+    Failure returns `{ error, routing }` (routing only if we got past
+    step 6).
 
 The property worth defending under questioning: **every outcome writes
 exactly one log row.** Validation failure, unconfigured provider, provider
@@ -121,12 +131,16 @@ of whichever vendors have an API key set, plus `getProvider()` and
 state — pure functions over numbers, same shape as `router.ts`. See "Cost
 and budget" below.
 
+**`src/cache.ts`** — stretch. `cacheKey()`, `cacheGet()`, `cacheSet()` over
+a plain in-memory `Map`. No I/O, no persistence. See "Response cache" below.
+
 **`src/routes/chat.ts`** — the `POST /v1/chat` handler described above, plus
 `bodySchema` (the request contract), `verdictLabel()` (turns a `redactedBy`
 list into the `"allow"` / `"redact:..."` string stored and returned), and
 `statusFor()` (the `ProviderError`-to-HTTP-code mapping). `statusFor()` is
 exported as of slice 6 — `routes/rag.ts` reuses it rather than duplicating
-the mapping.
+the mapping. This is also where the cache is wired in — see "Response
+cache" below.
 
 **`src/routes/admin.ts`** — slice 5. `GET /admin/stats`, behind the same
 `requireApiKey` preHandler as chat. Pulls everything from the `db.ts`
@@ -306,6 +320,51 @@ budget (429, refused before the provider call), and validation/provider-
 lookup failures (400, never got that far). `cost_eur` is `null` on all of
 those rows.
 
+## Response cache
+
+The stretch goal: an exact-hash cache in `cache.ts`, wired into
+`routes/chat.ts` only (RAG doesn't cache).
+
+**The key.** `cacheKey()` hashes (SHA-256, hex) a JSON object of everything
+that determines the completion: the *routed* model (not the caller's `tier`
+— two tiers can route to the same model, or the same tier can route to
+different models depending on other rules, so the model actually being
+called is what has to match), the *redacted* messages and system prompt
+(never the caller's original text — see "Guardrails"), `maxTokens`, and
+`temperature`. Leave any of those out and a cache hit could return an
+answer for a different question than the one that was asked.
+
+**Why the lookup sits after budget and guardrails, not before.** Steps 4-6
+in the request flow above — budget check, input guardrails, routing — all
+run before `cacheGet()`. A cache hit is still *this key's* request and
+still needs to pass every policy check that a miss would; the only thing
+skipped is the vendor call. Checking the cache first would let a cached
+answer slip past an exhausted budget or a since-added guardrail rule.
+
+**Why only the output-guardrail-approved text is stored.** `cacheSet()` is
+called with `outGuard.text`, after output guardrails have run, not with the
+raw provider response. "A hit replays a response already judged safe to
+return" — storing the pre-guardrail text would mean a later hit could hand
+back something the output rules would have redacted or blocked.
+
+**What a hit looks like.** No provider call, so no new usage — the response
+reuses the *original* call's `usage`, `costEur` is `0`, `cacheHit` is
+`true`, and `latencyMs` is whatever the lookup itself took (about a
+millisecond). `routing` and `guardrails` in the response are still computed
+fresh for this request — routing and input guardrails always run, hit or
+miss. The log row matches: `cache_hit = 1`, `cost_eur = 0`,
+`input_tokens`/`output_tokens` `null` (no provider call means no new token
+counts to log).
+
+**In-memory, on purpose, with the honest limits stated.** `store` in
+`cache.ts` is a plain `Map` — no TTL, no eviction, no cap. It empties on
+every restart and grows without bound for as long as the process runs. Both
+are fine for a single-process demo and wrong for production. The honest
+production answer is a shared store (Redis or similar) with a TTL and an
+eviction policy, and — if repeatability of a cached answer matters — caching
+only `temperature: 0` requests, since a nonzero temperature means the
+provider itself wouldn't have given the same answer twice.
+
 ## RAG
 
 **Ingestion.** `npm run ingest` (optionally `npm run ingest -- <folder>`,
@@ -455,16 +514,17 @@ writes don't block each other.
 | `latency_ms` | INTEGER | yes — on success, the provider call's latency (`value.latencyMs`); on failures, time from handler entry |
 | `guardrail_verdict` | TEXT | yes, whenever guardrails ran — `"allow"`, `"redact:<rule ids>"`, or `"block:<rule id>"`; `null` on validation/provider-lookup failures that happen before guardrails run |
 | `blocked_reason` | TEXT | yes, only when a guardrail blocked the request; `null` otherwise |
-| `cache_hit` | INTEGER | **always NULL today** — stretch goal (response cache) fills this |
+| `cache_hit` | INTEGER | yes, on every `/v1/chat` completion (1 or 0); `null` on RAG rows and on any row that never reached a completion (validation, over-budget, input-block) |
 | `status` | INTEGER | yes, always — the HTTP status code returned |
 
-The insert statement (`insertStmt` in `db.ts`) still hard-codes `NULL` for
-`cache_hit` — that's the only column left out of `RequestLogEntry`.
-`cost_eur`, `guardrail_verdict`, and `blocked_reason` are all real fields on
-`RequestLogEntry` now: every handler branch in `routes/chat.ts` passes an
-explicit value, `null` included, for the outcomes those columns don't apply
-to. The full schema was created up front specifically so slices 4 and 5 were
-a column-fill, not a migration.
+No column is reserved any more. `cache_hit` was the last one still
+hard-coded to `NULL` in the insert statement; it's now a real field on
+`RequestLogEntry`, like `cost_eur`, `guardrail_verdict`, and
+`blocked_reason` before it — every handler branch in `routes/chat.ts`
+passes an explicit value, `null` included, for the outcomes it doesn't
+apply to. The full schema was created up front back in slice 3
+specifically so slices 4, 5, and the stretch cache were each a column-fill,
+never a migration.
 
 ## Error taxonomy
 
@@ -583,9 +643,12 @@ from a literal in this file. `computeCostEur()` has to check
 pricing at zero. The type system is forcing the right business behavior,
 not just satisfying the compiler.
 
-## What's next
+## Closing note
 
-All planned slices (1-7) are built. Per `PLAN.md`, what's left:
-
-- **Stretch** — an exact-hash response cache, filling in `cache_hit`.
-- **Demo-prep hour** — rehearsing the walkthrough, not a code change.
+All planned slices, plus the stretch cache, are built — nothing on `PLAN.md`
+remains as code. What's left is demo prep, not engineering: `DEMO.md` has
+the six-step walkthrough with a spoken line per step, and
+`scripts/seed.sh` populates the request log with ~20 varied requests
+(misses, cache hits, every routing rule, both providers, redactions,
+blocks, validation failures, RAG queries) so the dashboard isn't empty on a
+screen share.
