@@ -9,9 +9,9 @@ import { env } from "./env";
  *
  * better-sqlite3 is synchronous. For a single-process gateway that is a
  * feature: no async plumbing in the handlers, and a write is done before the
- * response goes out. The columns cost_eur, guardrail_verdict, blocked_reason
- * and cache_hit are written as NULL until slices 4 and 5 fill them; creating
- * the full schema now avoids a migration mid-build.
+ * response goes out. The columns cost_eur and cache_hit are written as NULL
+ * until slice 5 and the stretch cache fill them; creating the full schema up
+ * front avoids a migration mid-build. Slice 4 filled the guardrail columns.
  */
 
 const db = new Database(env.DB_PATH);
@@ -51,6 +51,10 @@ export type RequestLogEntry = {
   inputTokens: number | null;
   outputTokens: number | null;
   latencyMs: number | null;
+  /** "allow", "redact:<rule ids>", or "block:<rule id>"; null when guardrails never ran. */
+  guardrailVerdict: string | null;
+  /** Human-readable reason, only when blocked. */
+  blockedReason: string | null;
   status: number;
 };
 
@@ -59,8 +63,8 @@ const insertStmt = db.prepare(`
     input_tokens, output_tokens, cost_eur, latency_ms, guardrail_verdict,
     blocked_reason, cache_hit, status)
   VALUES (@id, @ts, @apiKey, @routeRule, @provider, @model, @tier,
-    @inputTokens, @outputTokens, NULL, @latencyMs, NULL,
-    NULL, NULL, @status)
+    @inputTokens, @outputTokens, NULL, @latencyMs, @guardrailVerdict,
+    @blockedReason, NULL, @status)
 `);
 
 /**

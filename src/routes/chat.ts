@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { bearerToken, requireApiKey } from "../auth";
 import { logRequest } from "../db";
+import { guardInput, guardOutput } from "../guardrails";
 import { getProvider } from "../providers/registry";
 import { estimateInputTokens, route } from "../router";
 import type { ProviderError } from "../types";
@@ -50,6 +51,8 @@ export function registerChatRoute(app: FastifyInstance): void {
         inputTokens: null,
         outputTokens: null,
         latencyMs: Date.now() - startedAt,
+        guardrailVerdict: null,
+        blockedReason: null,
         status: 400,
       });
       return reply.code(400).send({
@@ -69,6 +72,8 @@ export function registerChatRoute(app: FastifyInstance): void {
         inputTokens: null,
         outputTokens: null,
         latencyMs: Date.now() - startedAt,
+        guardrailVerdict: null,
+        blockedReason: null,
         status: 400,
       });
       return reply.code(400).send({
@@ -76,19 +81,42 @@ export function registerChatRoute(app: FastifyInstance): void {
       });
     }
 
+    // Slice 4: input guardrails run BEFORE routing and the provider call.
+    // A blocked request is refused here: 403, one log row, zero spend.
+    const guard = guardInput(body.messages, body.system);
+    if (!guard.allowed) {
+      logRequest({
+        apiKey,
+        routeRule: null,
+        provider: null,
+        model: null,
+        tier: null,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: Date.now() - startedAt,
+        guardrailVerdict: `block:${guard.ruleId}`,
+        blockedReason: guard.reason,
+        status: 403,
+      });
+      return reply.code(403).send({
+        error: { kind: "blocked", ruleId: guard.ruleId, reason: guard.reason },
+      });
+    }
+
     // Slice 2: the tier flag is now an input to the router, not the answer.
+    // The router (and the provider) see the redacted text, never the original.
     const decision = route(
       {
         requestedTier: body.tier,
         ...(body.task !== undefined ? { task: body.task } : {}),
-        estimatedInputTokens: estimateInputTokens(body.messages, body.system),
+        estimatedInputTokens: estimateInputTokens(guard.messages, guard.system),
       },
       provider,
     );
 
     const result = await provider.complete(decision.model, {
-      messages: body.messages,
-      ...(body.system !== undefined ? { system: body.system } : {}),
+      messages: guard.messages,
+      ...(guard.system !== undefined ? { system: guard.system } : {}),
       maxTokens: body.maxTokens,
       temperature: body.temperature,
     });
@@ -106,6 +134,8 @@ export function registerChatRoute(app: FastifyInstance): void {
         inputTokens: null,
         outputTokens: null,
         latencyMs: Date.now() - startedAt,
+        guardrailVerdict: verdictLabel(guard.redactedBy),
+        blockedReason: null,
         status,
       });
       // Failures carry the routing decision too: "what were we about to spend
@@ -114,6 +144,32 @@ export function registerChatRoute(app: FastifyInstance): void {
     }
 
     const { value } = result;
+
+    // Slice 4: output guardrails scan the model's text for secret patterns
+    // before it leaves the gateway. Output rules only redact today, but the
+    // type admits a block verdict, so the compiler makes us handle it.
+    const outGuard = guardOutput(value.text);
+    if (!outGuard.allowed) {
+      logRequest({
+        apiKey,
+        routeRule: decision.ruleId,
+        provider: value.provider,
+        model: value.model,
+        tier: decision.tier,
+        inputTokens: value.usage.inputTokens,
+        outputTokens: value.usage.outputTokens,
+        latencyMs: value.latencyMs,
+        guardrailVerdict: `block:${outGuard.ruleId}`,
+        blockedReason: outGuard.reason,
+        status: 403,
+      });
+      return reply.code(403).send({
+        error: { kind: "blocked", ruleId: outGuard.ruleId, reason: outGuard.reason },
+        routing: decision,
+      });
+    }
+
+    const redactedBy = [...guard.redactedBy, ...outGuard.redactedBy];
 
     logRequest({
       apiKey,
@@ -124,6 +180,8 @@ export function registerChatRoute(app: FastifyInstance): void {
       inputTokens: value.usage.inputTokens,
       outputTokens: value.usage.outputTokens,
       latencyMs: value.latencyMs,
+      guardrailVerdict: verdictLabel(redactedBy),
+      blockedReason: null,
       status: 200,
     });
 
@@ -141,14 +199,21 @@ export function registerChatRoute(app: FastifyInstance): void {
     );
 
     return reply.send({
-      text: value.text,
-      // These two numbers are the ones slice 4 multiplies by a price table.
+      text: outGuard.text,
+      // These two numbers are the ones slice 5 multiplies by a price table.
       // Returning them now means the cost slice has nothing left to discover.
       usage: value.usage,
       routing: decision,
+      // Like routing: the verdict is visible, not just logged.
+      guardrails: { verdict: verdictLabel(redactedBy), redactedBy },
       latencyMs: value.latencyMs,
     });
   });
+}
+
+/** "allow" when nothing fired, otherwise "redact:" plus the rule ids. */
+function verdictLabel(redactedBy: string[]): string {
+  return redactedBy.length === 0 ? "allow" : `redact:${redactedBy.join(",")}`;
 }
 
 /**
