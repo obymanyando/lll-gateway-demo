@@ -1,7 +1,7 @@
 # Technical notes
 
-Internal notes for explaining this codebase out loud. Covers slices 1-3 only:
-provider adapters, the router, and the SQLite request log. Guardrails, cost,
+Internal notes for explaining this codebase out loud. Covers slices 1-4:
+provider adapters, the router, the SQLite request log, and guardrails. Cost,
 RAG, and the dashboard do not exist yet — see "what's next" at the end.
 
 ## Architecture overview
@@ -23,13 +23,23 @@ Request flow through `POST /v1/chat`:
 3. **Provider resolution** — `getProvider(body.provider)` looks up the named
    provider, or the first configured one if the caller didn't name one.
    Naming a provider that isn't configured is also a 400, also logged.
-4. **Routing decision** — `route()` in `router.ts` turns the request into a
-   `RouteDecision`: which provider, which model, which rule fired, why.
-5. **Provider HTTP call** — `provider.complete(model, req)` does the real
+4. **Input guardrails** — `guardInput()` runs PII redaction and the
+   prompt-injection deny list over every message and the system prompt. A
+   block here returns 403 immediately, logged, before routing or any
+   provider call happens — see "Guardrails" below.
+5. **Routing decision** — `route()` in `router.ts` turns the (already
+   redacted) request into a `RouteDecision`: which provider, which model,
+   which rule fired, why.
+6. **Provider HTTP call** — `provider.complete(model, req)` does the real
    `fetch` to the vendor. It never throws; it returns a `CompletionResult`.
-6. **Log row** — exactly one `logRequest()` call, whichever way step 5 went.
-7. **Response** — success returns `{ text, usage, routing, latencyMs }`.
-   Failure returns `{ error, routing }` (routing only if we got past step 4).
+7. **Output guardrails** — `guardOutput()` scans the response text for
+   secret patterns before it goes back to the caller. A block here is
+   logged too, but the provider call already happened, so usage is known.
+8. **Log row** — exactly one `logRequest()` call, whichever way the request
+   went.
+9. **Response** — success returns
+   `{ text, usage, routing, guardrails, latencyMs }`. Failure returns
+   `{ error, routing }` (routing only if we got past step 5).
 
 The property worth defending under questioning: **every outcome writes
 exactly one log row.** Validation failure, unconfigured provider, provider
@@ -65,6 +75,14 @@ vendors.
 insert statement, and a typed read helper. This is the only file that talks
 to `better-sqlite3`.
 
+**`src/guardrails.ts`** — the input and output rule lists, `applyRules()`
+(the fold that runs a rule list over one string), and the two entry points
+`guardInput()` / `guardOutput()`. No I/O, no state — pure functions over
+strings, like `router.ts`. See "Guardrails" below.
+
+**`src/guardrails.test.ts`** — a handful of `node:assert` checks against
+`guardInput`/`guardOutput`, no test framework. Run with `npm test`.
+
 **`src/router.ts`** — the rules table and `route()`. Pure function: given a
 `RouteInput` and a `Provider`, returns a `RouteDecision`. No I/O, no state,
 easy to reason about and to unit-test later if that's ever added.
@@ -84,8 +102,9 @@ of whichever vendors have an API key set, plus `getProvider()` and
 `defaultProvider()` for looking one up.
 
 **`src/routes/chat.ts`** — the `POST /v1/chat` handler described above, plus
-`bodySchema` (the request contract) and `statusFor()` (the error-to-HTTP-code
-mapping).
+`bodySchema` (the request contract), `verdictLabel()` (turns a `redactedBy`
+list into the `"allow"` / `"redact:..."` string stored and returned), and
+`statusFor()` (the `ProviderError`-to-HTTP-code mapping).
 
 ## Routing
 
@@ -116,6 +135,79 @@ failures too: the caller — and the log — should be able to see what the
 gateway was *about to spend money on* even when the provider call never
 landed or never returned usable output.
 
+## Guardrails
+
+Two independent rule lists live in `guardrails.ts`: **input rules** run
+before routing and the provider call; **output rules** run on the model's
+response text before it goes back to the caller.
+
+Every rule returns a `GuardrailVerdict`, not a boolean:
+
+```ts
+type GuardrailVerdict =
+  | { action: "allow" }
+  | { action: "redact"; ruleId: string; redacted: string }
+  | { action: "block"; ruleId: string; reason: string };
+```
+
+The verdict carries *which* rule fired and *what* it did, not just yes/no —
+that's what makes `guardrail_verdict` in the request log worth having (see
+below), and it's the union type discussed under "TypeScript ideas".
+
+**Input rules**, checked in order, each seeing the text after every earlier
+rule already ran:
+
+| order | rule id | matches | action |
+|---|---|---|---|
+| 1 | `pii-email` | an email address | redact → `[REDACTED:email]` |
+| 2 | `pii-iban` | an IBAN-shaped string | redact → `[REDACTED:iban]` |
+| 3 | `pii-card` | a 12-19 digit card-shaped number | redact → `[REDACTED:card]` |
+| 4 | `pii-national-id` | a `###-##-####` pattern | redact → `[REDACTED:national-id]` |
+| 5 | `injection-denylist` | one of five literal phrases (e.g. "ignore previous instructions"), matched case-insensitively | block |
+
+IBAN is checked before card deliberately: the card pattern is looser and
+would eat an IBAN's digit tail if it ran first.
+
+**Output rules**, redact-only, run over the response text:
+
+| order | rule id | matches | action |
+|---|---|---|---|
+| 1 | `secret-api-key` | an `sk-...`-shaped string | redact → `[REDACTED:api-key]` |
+| 2 | `secret-cloud-key` | an `AKIA...`-shaped string | redact → `[REDACTED:cloud-key]` |
+| 3 | `secret-private-key` | a `-----BEGIN ... PRIVATE KEY-----` header | redact → `[REDACTED:private-key]` |
+
+**Ordering and folding.** `applyRules()` folds one rule list left-to-right
+over a single string: each rule sees the text after every earlier
+redaction, redactions accumulate into a `redactedBy` list of rule ids, and
+the first `block` wins — nothing after it runs. `guardOutput()` calls
+`applyRules()` directly on the response text. `guardInput()` calls it once
+per message and once for the system prompt, so a redaction can't merge two
+messages into one, then dedupes the collected rule ids with `new Set`.
+
+**Why a verdict, not a boolean.** A boolean can say "flagged"; it can't say
+which rule flagged it or what happened as a result. `guardrail_verdict`
+in the request log — `"allow"`, `"redact:pii-email,pii-card"`,
+`"block:injection-denylist"` — is built straight from this type in
+`verdictLabel()`. There's no separate summarizing step that could drift
+from what the rules actually did.
+
+**Redacted text is what the provider sees.** `routes/chat.ts` calls
+`guardInput()` before `route()`, and passes `guard.messages` /
+`guard.system` — never the original request body — into both the router's
+token estimate and the provider call. The router and the vendor never see
+the caller's original PII.
+
+**Why a block costs nothing.** An input block returns before `route()` or
+`provider.complete()` run: no HTTP call to a vendor, so no tokens and no
+spend, ever. The response is `403` with
+`{ error: { kind: "blocked", ruleId, reason } }`, and the log row records
+`guardrail_verdict: "block:<ruleId>"` and `blocked_reason`, with
+`input_tokens` / `output_tokens` / `cost_eur` left `null`. An output block
+is different — it's a path the type system forces `chat.ts` to handle even
+though today's output rules only ever redact — but if it ever fired, the
+provider call already happened, so usage would be known and logged even
+though the text never reaches the caller.
+
 ## SQLite schema
 
 One table, `requests`, created in `db.ts` with `CREATE TABLE IF NOT EXISTS`
@@ -136,16 +228,18 @@ writes don't block each other.
 | `output_tokens` | INTEGER | yes, only on success |
 | `cost_eur` | REAL | **always NULL today** — slice 5 (cost/budget) fills this |
 | `latency_ms` | INTEGER | yes — on success, the provider call's latency (`value.latencyMs`); on failures, time from handler entry |
-| `guardrail_verdict` | TEXT | **always NULL today** — slice 4 (guardrails) fills this |
-| `blocked_reason` | TEXT | **always NULL today** — slice 4 fills this |
+| `guardrail_verdict` | TEXT | yes, whenever guardrails ran — `"allow"`, `"redact:<rule ids>"`, or `"block:<rule id>"`; `null` on validation/provider-lookup failures that happen before guardrails run |
+| `blocked_reason` | TEXT | yes, only when a guardrail blocked the request; `null` otherwise |
 | `cache_hit` | INTEGER | **always NULL today** — stretch goal (response cache) fills this |
 | `status` | INTEGER | yes, always — the HTTP status code returned |
 
-The insert statement (`insertStmt` in `db.ts`) hard-codes `NULL` for
-`cost_eur`, `guardrail_verdict`, `blocked_reason`, and `cache_hit` — those
-columns aren't even in `RequestLogEntry`, the type a handler fills in. The
-full schema exists now specifically so slices 4 and 5 are a column-fill, not
-a migration.
+The insert statement (`insertStmt` in `db.ts`) still hard-codes `NULL` for
+`cost_eur` and `cache_hit` — those two columns aren't in `RequestLogEntry`
+yet. `guardrail_verdict` and `blocked_reason` are, as of slice 4: every
+handler branch after the guardrail checks pass a real value (or an explicit
+`null` for outcomes that happen before guardrails run, like bad-request
+validation). The full schema was created up front specifically so slices 4
+and 5 are a column-fill, not a migration.
 
 ## Error taxonomy
 
@@ -174,6 +268,16 @@ credentials are bad, or the vendor is having a problem — nothing the caller
 did wrong, and not something they can fix by retrying with a different key.
 Collapsing those into one status code would hide that distinction.
 
+**403 (`blocked`) is not a `ProviderError`.** It never goes through
+`statusFor()`. Both guardrail checks in `routes/chat.ts` return
+`reply.code(403).send({ error: { kind: "blocked", ruleId, reason } })`
+directly, before or after the provider call but always outside the
+`ProviderError` union. That's deliberate: a block is the gateway's own
+policy refusing the request, not a vendor failure — folding it into
+`ProviderError` would make `statusFor()`'s switch responsible for a case
+that has nothing to do with a provider, and would force every provider
+adapter to know about guardrails.
+
 ## TypeScript ideas used here
 
 **`Result<T, E>` instead of throw** — `types.ts`. `Provider.complete()` and
@@ -187,7 +291,7 @@ and the `kind` field in `ProviderError`. TypeScript uses the literal
 discriminant (`ok: true` / `ok: false`, or each `kind` string) to narrow
 which fields exist inside an `if` or `switch` branch. See the comment block
 at the top of `types.ts` for the canonical example, and `routes/chat.ts`
-line ~98 (`if (!result.ok) { ... }`) for it in use.
+line ~126 (`if (!result.ok) { ... }`) for it in use.
 
 **`z.infer` deriving types from schemas** — `env.ts` (`Env`), `routes/chat.ts`
 (`ChatBody`), `db.ts` (`RequestRow`). The zod schema is written once; the
@@ -218,6 +322,13 @@ is an optional field — the property has to be *absent*, not present-with-
 undefined. The spread is how the code produces "absent" rather than
 "present but undefined".
 
+**`GuardrailVerdict` — illegal states unrepresentable** — `guardrails.ts`.
+A third discriminated union alongside `Result` and `ProviderError`, this one
+chosen to make a mistake impossible to write rather than just easy to
+narrow: there is no way to construct `{ action: "redact" }` without also
+supplying the `redacted` text, or `{ action: "block" }` without a `reason`.
+A rule that "flags something but forgets to say what" doesn't compile.
+
 **Exhaustive switch, no `default`** — `statusFor()` in `routes/chat.ts`.
 `ProviderError` is a closed union; the switch handles all five `kind`
 values and has no `default` case. `noFallthroughCasesInSwitch` plus
@@ -230,9 +341,6 @@ performing part of the code review.
 
 Per `PLAN.md`, not yet built:
 
-- **Slice 4** — guardrails: input PII/injection rules, output secret-scan
-  rules, a structured verdict, `guardrail_verdict` / `blocked_reason` filled
-  in, blocked requests return 403.
 - **Slice 5** — cost and budget: a price table, `cost_eur` filled in, a
   per-key monthly budget enforced with 429, `GET /admin/stats`.
 - **Slice 6** — a RAG endpoint (`POST /v1/rag/query`), brute-force cosine
