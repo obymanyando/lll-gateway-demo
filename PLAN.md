@@ -1,5 +1,10 @@
 # PLAN.md
 
+**Status: all seven slices built and verified, plus the stretch cache. The
+final hour's assets exist (`scripts/seed.sh`, `DEMO.md`); what remains is the
+timed run-through, out loud.** The slice descriptions below are kept as the
+record of what was planned and why.
+
 Total budget: 8 to 10 hours. Slice 1 is spent. Roughly 7 hours of build left,
 plus a fixed final hour that is not code.
 

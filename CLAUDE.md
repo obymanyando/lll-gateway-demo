@@ -90,5 +90,9 @@ from a later one.
 
 ## State
 
-Slice 1 is complete and verified. See `PLAN.md` for what is done and what is
-next. Start there.
+All seven slices are complete and verified, plus the stretch response cache.
+Demo assets exist: `DEMO.md` (the walkthrough) and `scripts/seed.sh`.
+Documentation lives in `docs/TECHNICAL.md` and `docs/USER.md`.
+
+Nothing on `PLAN.md` remains as code. Before adding anything new, re-read the
+hard cut list above — the largest risk to this project is one more feature.

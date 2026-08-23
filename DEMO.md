@@ -35,18 +35,23 @@ curl -s localhost:8080/health
 
 ```bash
 curl -s -X POST localhost:8080/v1/chat -H "$CT" -H "$AUTH" \
-  -d '{"messages":[{"role":"user","content":"Name the largest planet, one word."}],"maxTokens":30}'
+  -d '{"messages":[{"role":"user","content":"Name the deepest ocean, one word."}],"maxTokens":30}'
 ```
 
 > "Every response carries the real token usage, the cost in euros computed
 > from it, the routing decision with the rule that fired, and the guardrail
 > verdict — nothing this gateway does is silent."
 
+This prompt is deliberately one the seed script does not use, so it is a
+cache miss with a real cost. **Restart the server between rehearsals** — the
+cache is in memory, and a second run of this exact step would otherwise come
+back as a hit costing zero.
+
 ## 3. The same request, escalated by a routing rule
 
 ```bash
 curl -s -X POST localhost:8080/v1/chat -H "$CT" -H "$AUTH" \
-  -d '{"messages":[{"role":"user","content":"Name the largest planet, one word."}],"task":"analysis","maxTokens":30}'
+  -d '{"messages":[{"role":"user","content":"Name the deepest ocean, one word."}],"task":"analysis","maxTokens":30}'
 ```
 
 > "Same question, but a task hint fires the task-hint rule and routes to the
