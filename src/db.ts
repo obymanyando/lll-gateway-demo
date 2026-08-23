@@ -37,6 +37,20 @@ db.exec(`
   )
 `);
 
+// Slice 6: RAG chunks. One row per chunk; the embedding is a Float32Array
+// serialized as a BLOB. Brute-force cosine at query time reads them all —
+// honest and fine for a few hundred chunks. The scale answer is a swap of
+// this table for pgvector or a managed store, behind the same functions.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chunks (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content     TEXT NOT NULL,
+    embedding   BLOB NOT NULL
+  )
+`);
+
 /**
  * What a handler reports about one request. Fields that do not apply to a
  * given outcome are explicit `null`, not optional: every call site is forced
@@ -175,4 +189,69 @@ export function successLatenciesSince(sinceIso: string): number[] {
     )
     .all(sinceIso);
   return rows.map((row) => z.object({ latency_ms: z.number() }).parse(row).latency_ms);
+}
+
+// --- Slice 6: chunk storage for the RAG endpoint. ---
+
+export type StoredChunk = {
+  source: string;
+  chunkIndex: number;
+  content: string;
+  embedding: Float32Array;
+};
+
+const insertChunkStmt = db.prepare(`
+  INSERT INTO chunks (id, source, chunk_index, content, embedding)
+  VALUES (@id, @source, @chunkIndex, @content, @embedding)
+`);
+
+/** A chunk before it has an embedding — what the ingest script produces. */
+export type ChunkInput = {
+  source: string;
+  chunkIndex: number;
+  content: string;
+};
+
+/** Ingest wipes and rebuilds; no incremental sync to reason about in v0. */
+export function replaceAllChunks(chunks: ChunkInput[], embeddings: number[][]): void {
+  db.prepare("DELETE FROM chunks").run();
+  chunks.forEach((chunk, i) => {
+    const vector = embeddings[i];
+    if (vector === undefined) {
+      throw new Error(`No embedding for chunk ${i}. Ingest is broken, refusing to store.`);
+    }
+    insertChunkStmt.run({
+      id: randomUUID(),
+      source: chunk.source,
+      chunkIndex: chunk.chunkIndex,
+      content: chunk.content,
+      // Float32 halves the storage of float64 with no retrieval-quality cost.
+      embedding: Buffer.from(new Float32Array(vector).buffer),
+    });
+  });
+}
+
+const chunkRowSchema = z.object({
+  source: z.string(),
+  chunk_index: z.number(),
+  content: z.string(),
+  embedding: z.instanceof(Buffer),
+});
+
+export function allChunks(): StoredChunk[] {
+  const rows = db.prepare("SELECT source, chunk_index, content, embedding FROM chunks").all();
+  return rows.map((row) => {
+    const parsed = chunkRowSchema.parse(row);
+    // .slice() copies into a fresh, aligned ArrayBuffer. Reading the Buffer's
+    // memory in place could be misaligned for Float32Array and would also
+    // alias driver-owned memory.
+    const buf = parsed.embedding;
+    const embedding = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    return {
+      source: parsed.source,
+      chunkIndex: parsed.chunk_index,
+      content: parsed.content,
+      embedding,
+    };
+  });
 }

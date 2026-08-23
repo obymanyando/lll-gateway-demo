@@ -264,14 +264,15 @@ function verdictLabel(redactedBy: string[]): string {
 }
 
 /**
- * Map provider failures to HTTP status codes.
+ * Map provider failures to HTTP status codes. Exported since slice 6 because
+ * the RAG route classifies provider failures the same way.
  *
  * TS note: this switch has no `default`. Because ProviderError is a closed
  * union and every member is handled, the function typechecks. When you add a
  * new member in a later slice, this stops compiling and TypeScript points at
  * the line. That is the compiler doing your code review.
  */
-function statusFor(error: ProviderError): number {
+export function statusFor(error: ProviderError): number {
   switch (error.kind) {
     case "auth":
       return 502;
