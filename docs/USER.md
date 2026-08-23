@@ -1,8 +1,9 @@
 # Running and calling the gateway
 
 This covers the gateway as it exists today: provider routing, guardrails, a
-request log, and cost accounting with budget enforcement. RAG and a
-dashboard are not built yet — see "what's next" at the end.
+request log, cost accounting with budget enforcement, and a RAG endpoint
+over your own markdown docs. A dashboard is not built yet — see "what's
+next" at the end.
 
 ## Prerequisites
 
@@ -23,6 +24,7 @@ npm run dev         # tsx watch, restarts on file change
 npm run start        # tsx, no watch
 npm run typecheck    # tsc --noEmit, strict mode
 npm test             # plain node:assert checks against the guardrail rules
+npm run ingest        # chunk + embed rag-docs/*.md, rebuild the chunks table
 ```
 
 ## `.env` reference
@@ -34,7 +36,7 @@ npm test             # plain node:assert checks against the guardrail rules
 | `DB_PATH` | `gateway.db` | no — SQLite file for the request log |
 | `MONTHLY_BUDGET_EUR` | `25` | no — per-API-key monthly spend ceiling, in EUR |
 | `ANTHROPIC_API_KEY` | — | at least one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is required |
-| `OPENAI_API_KEY` | — | see above |
+| `OPENAI_API_KEY` | — | see above — also **required for RAG** (`npm run ingest` and `/v1/rag/query`), even if chat is running entirely on Anthropic, because embeddings are OpenAI-only today |
 | `ANTHROPIC_MODEL_CHEAP` | `claude-haiku-4-5-20251001` | no |
 | `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-4-6` | no |
 | `OPENAI_MODEL_CHEAP` | `gpt-4o-mini` | no |
@@ -274,6 +276,105 @@ refusals. `p95LatencyMs` is over successful (200) requests only, and is
 `null` if none happened this month. `spendByModel` and `spendByKey` only
 list models/keys that actually spent something.
 
+## RAG
+
+`POST /v1/rag/query` answers questions from your own markdown docs, with
+the answer grounded in retrieved chunks and every chunk's source and score
+visible in the response.
+
+### Ingesting docs
+
+Drop `.md` files in `rag-docs/` (three sample policy docs about the gateway
+itself ship there already) and run:
+
+```bash
+npm run ingest
+```
+
+This needs `OPENAI_API_KEY` — embeddings are OpenAI-only in this version,
+even if chat is configured for Anthropic. Ingest chunks every file, embeds
+everything in one batch call, and rebuilds the chunk store from scratch —
+it's a script you run by hand after the docs change, not something the
+server does automatically. Output looks like:
+
+```
+routing-policy.md: 2 chunk(s)
+guardrails-policy.md: 1 chunk(s)
+budget-policy.md: 1 chunk(s)
+Stored 4 chunks from 3 file(s), embedded with text-embedding-3-small.
+```
+
+To ingest a different folder: `npm run ingest -- <folder>`.
+
+### `POST /v1/rag/query`
+
+Requires `Authorization: Bearer <GATEWAY_API_KEY>`, same as chat.
+
+Request body:
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `query` | string | yes | — | non-empty |
+| `topK` | integer 1-10 | no | `4` | how many chunks to retrieve |
+
+```bash
+curl -s -X POST localhost:8080/v1/rag/query \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer YOUR_GATEWAY_API_KEY' \
+  -d '{"query":"What happens when a key goes over its monthly budget?"}'
+```
+
+Success response (`200`):
+
+```json
+{
+  "answer": "When a key's month-to-date spend reaches its monthly budget, the gateway refuses further requests with a 429 and an over_budget error, before any provider is called [budget-policy.md].",
+  "chunks": [
+    {
+      "source": "budget-policy.md",
+      "chunkIndex": 0,
+      "content": "# Budget policy\n\nEvery API key has a monthly spend budget in euros...",
+      "score": 0.6231
+    },
+    {
+      "source": "routing-policy.md",
+      "chunkIndex": 0,
+      "content": "# Routing policy\n\nThe gateway routes every chat request to a model tier...",
+      "score": 0.4118
+    }
+  ],
+  "usage": { "inputTokens": 210, "outputTokens": 42 },
+  "costEur": 0.000073,
+  "model": "claude-haiku-4-5-20251001",
+  "latencyMs": 640
+}
+```
+
+`chunks` is sorted by `score` (cosine similarity, 0 to 1, higher is more
+relevant) and capped at `topK`. That's what makes the answer checkable: you
+can see exactly which passages it was allowed to use and how confident the
+match was, not just trust the prose. `costEur` prices the answering
+completion only — the embedding call made to retrieve the chunks isn't
+priced or added in, so treat it as a lower bound, not a full accounting of
+the request's cost.
+
+### Same policies as chat
+
+RAG queries go through the same gateway policies as `/v1/chat`, in the same
+order: the monthly budget check runs first (a `429 over_budget` refuses the
+query before anything is embedded or answered), then input guardrails run
+on the query itself (a `403 blocked` refuses it before retrieval), then
+output guardrails run on the generated answer. Every outcome writes one row
+to the request log, `route_rule` `"rag-query"`.
+
+### No docs ingested yet
+
+Querying before running `npm run ingest` at least once returns a `400`:
+
+```json
+{ "error": { "kind": "bad_request", "message": "No chunks ingested. Run: npm run ingest" } }
+```
+
 ## HTTP status codes
 
 | status | when |
@@ -312,6 +413,4 @@ a possible later stretch fills it in.
 
 Not built yet, per `PLAN.md`:
 
-- **Slice 6** — `POST /v1/rag/query`, a retrieval endpoint over embedded
-  markdown chunks.
 - **Slice 7** — a static HTML dashboard.

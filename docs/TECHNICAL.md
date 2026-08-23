@@ -1,16 +1,18 @@
 # Technical notes
 
-Internal notes for explaining this codebase out loud. Covers slices 1-5:
-provider adapters, the router, the SQLite request log, guardrails, and cost
-accounting with budget enforcement. RAG and the dashboard do not exist yet —
-see "what's next" at the end.
+Internal notes for explaining this codebase out loud. Covers slices 1-6:
+provider adapters, the router, the SQLite request log, guardrails, cost
+accounting with budget enforcement, and a RAG endpoint over embedded markdown
+chunks. The dashboard does not exist yet — see "what's next" at the end.
 
 ## Architecture overview
 
-One Fastify process. Two routes that do real work: `POST /v1/chat` and
-`GET /admin/stats`. A `/health` route for a liveness check. No database
-migrations, no queue, no background worker. Everything happens
-synchronously inside the request handler, including the SQLite write.
+One Fastify process. Three routes that do real work: `POST /v1/chat`,
+`GET /admin/stats`, and `POST /v1/rag/query`. A `/health` route for a
+liveness check. No database migrations, no queue, no background worker.
+Everything happens synchronously inside the request handler, including the
+SQLite write. RAG ingestion is a separate one-off script (`npm run ingest`),
+not part of the request path.
 
 Request flow through `POST /v1/chat`:
 
@@ -83,7 +85,8 @@ insert statement, and the read helpers. This is the only file that talks to
 readers used for budget enforcement and `/admin/stats`: `spendSince()`,
 `spendByModelSince()`, `spendByKeySince()`, `requestCountsSince()`, and
 `successLatenciesSince()`. Same pattern as the row reader — every query
-result crosses a zod schema before it leaves this file.
+result crosses a zod schema before it leaves this file. Slice 6 adds the
+`chunks` table plus `replaceAllChunks()` and `allChunks()` — see "RAG" below.
 
 **`src/guardrails.ts`** — the input and output rule lists, `applyRules()`
 (the fold that runs a rule list over one string), and the two entry points
@@ -119,12 +122,28 @@ and budget" below.
 **`src/routes/chat.ts`** — the `POST /v1/chat` handler described above, plus
 `bodySchema` (the request contract), `verdictLabel()` (turns a `redactedBy`
 list into the `"allow"` / `"redact:..."` string stored and returned), and
-`statusFor()` (the `ProviderError`-to-HTTP-code mapping).
+`statusFor()` (the `ProviderError`-to-HTTP-code mapping). `statusFor()` is
+exported as of slice 6 — `routes/rag.ts` reuses it rather than duplicating
+the mapping.
 
 **`src/routes/admin.ts`** — slice 5. `GET /admin/stats`, behind the same
 `requireApiKey` preHandler as chat. Pulls everything from the `db.ts`
 aggregate readers and `pricing.ts`; no metrics store of its own. See "Cost
 and budget" below.
+
+**`src/rag/chunk.ts`** — slice 6, pure string work. `chunkText()` splits a
+document into overlapping pieces. No I/O.
+
+**`src/rag/embedder.ts`** — slice 6. `embed()` is a plain `fetch` to the
+OpenAI embeddings API, and `cosineSimilarity()` scores two vectors. See
+"RAG" below.
+
+**`src/rag/ingest.ts`** — slice 6. The `npm run ingest` script: reads
+markdown files, chunks and embeds them, rebuilds the `chunks` table. Not an
+HTTP route.
+
+**`src/routes/rag.ts`** — slice 6. The `POST /v1/rag/query` handler. See
+"RAG" below.
 
 ## Routing
 
@@ -270,6 +289,100 @@ construction: input-block (403, refused before the provider call), over
 budget (429, refused before the provider call), and validation/provider-
 lookup failures (400, never got that far). `cost_eur` is `null` on all of
 those rows.
+
+## RAG
+
+**Ingestion.** `npm run ingest` (optionally `npm run ingest -- <folder>`,
+default `rag-docs/`) reads every `.md` file, chunks each one with
+`chunkText()`, embeds every chunk in a single batch call, and calls
+`replaceAllChunks()` to wipe and rebuild the `chunks` table. It's a script
+run by hand when the docs change, not something the server does on boot or
+on a schedule.
+
+**Chunk size and overlap.** `chunkText()` targets ~2000 characters per
+chunk (~500 tokens, using the router's own 4-chars/token heuristic) with a
+200-character (~50 token) overlap between consecutive chunks. It prefers to
+cut at a newline rather than mid-sentence, but only if that wouldn't shrink
+the chunk below half size — a wall of text with no newlines still has to
+terminate somewhere. The overlap exists so a sentence sitting on a chunk
+boundary appears whole in at least one chunk; without it, the answer to a
+query can fall exactly into the gap between two chunks and neither one
+retrieves it.
+
+**One embedding vendor, by design.** `embedder.ts`'s `embed()` is a plain
+`fetch` to OpenAI's embeddings API (`text-embedding-3-small`), validated
+through zod, reusing the same `classifyHttp()` the chat adapters use. It's
+the only vendor because only one of the two configured providers offers an
+embeddings API — that's the seam: swapping embedding vendors later means
+changing this one file's URL, model name, and response schema, nothing
+else. `embed()` returns a `bad_request` error if `OPENAI_API_KEY` isn't set,
+even when the gateway is otherwise running fine on Anthropic for chat.
+
+**Storage.** Each chunk is one row in the `chunks` table (`id`, `source`,
+`chunk_index`, `content`, `embedding`). The embedding is stored as a
+`Float32Array`'s raw bytes in a BLOB column — half the size of float64, with
+no meaningful loss to retrieval quality at this vector length. Reading a
+row back copies the BLOB into a fresh, aligned `ArrayBuffer` via `.slice()`
+before wrapping it in a `Float32Array`; reading the driver's `Buffer` memory
+in place would risk misalignment and would alias memory the driver owns.
+`replaceAllChunks()` throws if a chunk comes back from `embed()` without a
+matching vector — an ingest bug should refuse to store bad data, not
+silently write a row with no embedding.
+
+**Query pipeline**, in `routes/rag.ts`, in order:
+
+1. **Body validation** — `{ query: string (min 1 char), topK: int 1-10,
+   default 4 }`.
+2. **Budget check** — same gate as `/v1/chat`: over budget is a 429 before
+   anything else runs. A RAG query spends real money too (the answering
+   completion).
+3. **Input guardrails** — `guardInput()` runs on the query, same rules as
+   chat. A block is a 403, logged, nothing called. The redacted query (not
+   the original) is what gets embedded and answered.
+4. **No-chunks check** — if the `chunks` table is empty, a 400 telling the
+   caller to run `npm run ingest`, rather than a confusing empty-results
+   200.
+5. **Embed the query** — one `embed()` call. A provider failure here maps
+   to an HTTP status through `statusFor()`, imported from `routes/chat.ts`
+   rather than re-implemented.
+6. **Score every chunk** — `cosineSimilarity()` between the query vector and
+   every stored chunk's vector, sorted descending, top `topK` kept.
+7. **Answer** — `defaultProvider()` on the **cheap** tier, temperature
+   `0.2`, with a system prompt instructing the model to answer only from
+   the retrieved context and cite `[filename]`. Cheap is enough here on
+   purpose: retrieval already narrowed the problem down to a page of
+   relevant text, so the model's job is reading comprehension over a short
+   context, not the kind of reasoning that justifies the strong tier.
+8. **Output guardrails** — `guardOutput()` scans the answer, same as chat.
+9. **Log row** — exactly one `logRequest()` call per request, `route_rule`
+   `"rag-query"`, following the same "every outcome logs, whichever
+   branch it took" discipline as `/v1/chat`.
+
+**Cost accounting is honest, not total.** `costEur` in the response is
+computed from the chat completion's real usage only — the embedding call's
+own cost is not counted. That's a real gap for exact accounting (embeddings
+aren't free), stated plainly rather than hidden: the pricing table only has
+completion models in it today, and folding embedding cost in would mean
+guessing which of two API calls a given cost belongs to when only one gets
+logged.
+
+**Why the scores are in the response.** `chunks` in the response carries
+`source`, `chunkIndex`, `content`, and `score` (cosine similarity, rounded
+to 4 decimals) for every chunk that was used. That's deliberate: a RAG
+answer is only trustworthy if you can see what it was built from. Returning
+the answer alone would make retrieval quality a black box; returning the
+scored, sourced chunks alongside it makes retrieval quality something you
+can inspect on every single request, not just something to trust.
+
+**Scale and the upgrade path.** Brute-force cosine over every chunk is
+milliseconds at the scale this demo runs at (a few hundred chunks) — there's
+no index because there's nothing to index yet. Past that, the swap is the
+`chunks` table for a vector-capable store (pgvector, a managed vector DB)
+behind the same `replaceAllChunks()` / `allChunks()` functions in `db.ts` —
+the query pipeline in `routes/rag.ts` wouldn't need to change shape, only
+what those two functions do internally. Hybrid retrieval (keyword + vector)
+and a reranking pass are the next quality lever after that, and neither
+exists here — both are future work, not implied by anything in this slice.
 
 ## SQLite schema
 
@@ -425,7 +538,5 @@ not just satisfying the compiler.
 
 Per `PLAN.md`, not yet built:
 
-- **Slice 6** — a RAG endpoint (`POST /v1/rag/query`), brute-force cosine
-  similarity over embedded markdown chunks stored in SQLite.
 - **Slice 7** — a static HTML dashboard reading `/admin/stats`.
 - **Stretch** — an exact-hash response cache, filling in `cache_hit`.
