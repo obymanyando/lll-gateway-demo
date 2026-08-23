@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { bearerToken, requireApiKey } from "../auth";
-import { logRequest } from "../db";
+import { logRequest, spendSince } from "../db";
 import { guardInput, guardOutput } from "../guardrails";
+import { budgetEurFor, computeCostEur, monthStartIso } from "../pricing";
 import { getProvider } from "../providers/registry";
 import { estimateInputTokens, route } from "../router";
 import type { ProviderError } from "../types";
@@ -50,6 +51,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         tier: null,
         inputTokens: null,
         outputTokens: null,
+        costEur: null,
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: null,
         blockedReason: null,
@@ -71,6 +73,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         tier: null,
         inputTokens: null,
         outputTokens: null,
+        costEur: null,
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: null,
         blockedReason: null,
@@ -78,6 +81,38 @@ export function registerChatRoute(app: FastifyInstance): void {
       });
       return reply.code(400).send({
         error: { kind: "bad_request", message: `Provider not configured: ${body.provider}` },
+      });
+    }
+
+    // Slice 5: budget enforcement. The month-to-date spend for this key is
+    // summed from the request log — the log IS the billing record, there is
+    // no second ledger to drift from it. Over budget refuses before any
+    // guardrail, routing, or provider work happens: 429, logged, zero spend.
+    const budgetEur = budgetEurFor(apiKey);
+    const spentEur = spendSince(apiKey, monthStartIso());
+    if (spentEur >= budgetEur) {
+      logRequest({
+        apiKey,
+        routeRule: null,
+        provider: null,
+        model: null,
+        tier: null,
+        inputTokens: null,
+        outputTokens: null,
+        costEur: null,
+        latencyMs: Date.now() - startedAt,
+        guardrailVerdict: null,
+        blockedReason: null,
+        status: 429,
+      });
+      return reply.code(429).send({
+        error: {
+          kind: "over_budget",
+          message: "Monthly budget for this API key is exhausted",
+          budgetEur,
+          spentEur: round6(spentEur),
+          remainingEur: round6(Math.max(0, budgetEur - spentEur)),
+        },
       });
     }
 
@@ -93,6 +128,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         tier: null,
         inputTokens: null,
         outputTokens: null,
+        costEur: null,
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: `block:${guard.ruleId}`,
         blockedReason: guard.reason,
@@ -133,6 +169,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         tier: decision.tier,
         inputTokens: null,
         outputTokens: null,
+        costEur: null,
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: verdictLabel(guard.redactedBy),
         blockedReason: null,
@@ -158,6 +195,9 @@ export function registerChatRoute(app: FastifyInstance): void {
         tier: decision.tier,
         inputTokens: value.usage.inputTokens,
         outputTokens: value.usage.outputTokens,
+        // The provider call happened, so the money is spent even though the
+        // text never reaches the caller. Blocked is not free here.
+        costEur: computeCostEur(value.model, value.usage),
         latencyMs: value.latencyMs,
         guardrailVerdict: `block:${outGuard.ruleId}`,
         blockedReason: outGuard.reason,
@@ -170,6 +210,7 @@ export function registerChatRoute(app: FastifyInstance): void {
     }
 
     const redactedBy = [...guard.redactedBy, ...outGuard.redactedBy];
+    const costEur = computeCostEur(value.model, value.usage);
 
     logRequest({
       apiKey,
@@ -179,6 +220,7 @@ export function registerChatRoute(app: FastifyInstance): void {
       tier: decision.tier,
       inputTokens: value.usage.inputTokens,
       outputTokens: value.usage.outputTokens,
+      costEur,
       latencyMs: value.latencyMs,
       guardrailVerdict: verdictLabel(redactedBy),
       blockedReason: null,
@@ -200,15 +242,20 @@ export function registerChatRoute(app: FastifyInstance): void {
 
     return reply.send({
       text: outGuard.text,
-      // These two numbers are the ones slice 5 multiplies by a price table.
-      // Returning them now means the cost slice has nothing left to discover.
       usage: value.usage,
+      // Slice 5: the price table times the real usage, visible per request.
+      costEur: costEur === null ? null : round6(costEur),
       routing: decision,
       // Like routing: the verdict is visible, not just logged.
       guardrails: { verdict: verdictLabel(redactedBy), redactedBy },
       latencyMs: value.latencyMs,
     });
   });
+}
+
+/** Costs are tiny fractions of a cent; six decimals keeps them readable. */
+function round6(n: number): number {
+  return Number(n.toFixed(6));
 }
 
 /** "allow" when nothing fired, otherwise "redact:" plus the rule ids. */

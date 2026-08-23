@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { env } from "./env";
 import { providers } from "./providers/registry";
+import { registerAdminRoutes } from "./routes/admin";
 import { registerChatRoute } from "./routes/chat";
 
 const app = Fastify({
@@ -16,6 +17,7 @@ app.get("/health", async () => ({
 }));
 
 registerChatRoute(app);
+registerAdminRoutes(app);
 
 async function main(): Promise<void> {
   try {

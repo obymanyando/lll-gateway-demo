@@ -25,6 +25,9 @@ const schema = z.object({
   // SQLite file for the request log. Gitignored via *.db.
   DB_PATH: z.string().default("gateway.db"),
 
+  // Monthly spend ceiling per API key, in EUR. Enforced with a 429.
+  MONTHLY_BUDGET_EUR: z.coerce.number().positive().default(25),
+
   // At least one of these must be present. Checked in .refine() below.
   // `emptyAsUndefined` matters: a copied .env.example leaves the unused key as
   // an empty string, and an empty string is not the same as "not configured".

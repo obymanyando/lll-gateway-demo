@@ -9,9 +9,9 @@ import { env } from "./env";
  *
  * better-sqlite3 is synchronous. For a single-process gateway that is a
  * feature: no async plumbing in the handlers, and a write is done before the
- * response goes out. The columns cost_eur and cache_hit are written as NULL
- * until slice 5 and the stretch cache fill them; creating the full schema up
- * front avoids a migration mid-build. Slice 4 filled the guardrail columns.
+ * response goes out. Only cache_hit is still written as NULL (the stretch
+ * cache would fill it); creating the full schema up front avoided any
+ * migration. Slice 4 filled the guardrail columns, slice 5 filled cost_eur.
  */
 
 const db = new Database(env.DB_PATH);
@@ -50,6 +50,8 @@ export type RequestLogEntry = {
   tier: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Real usage times the price table; null when nothing was spent or the model is unpriced. */
+  costEur: number | null;
   latencyMs: number | null;
   /** "allow", "redact:<rule ids>", or "block:<rule id>"; null when guardrails never ran. */
   guardrailVerdict: string | null;
@@ -63,7 +65,7 @@ const insertStmt = db.prepare(`
     input_tokens, output_tokens, cost_eur, latency_ms, guardrail_verdict,
     blocked_reason, cache_hit, status)
   VALUES (@id, @ts, @apiKey, @routeRule, @provider, @model, @tier,
-    @inputTokens, @outputTokens, NULL, @latencyMs, @guardrailVerdict,
+    @inputTokens, @outputTokens, @costEur, @latencyMs, @guardrailVerdict,
     @blockedReason, NULL, @status)
 `);
 
@@ -110,4 +112,67 @@ export function listRecentRequests(limit: number): RequestRow[] {
   // .parse throws on mismatch. This is our own table: a shape mismatch is a
   // bug in this file, and crashing loudly beats returning wrong data quietly.
   return rows.map((row) => rowSchema.parse(row));
+}
+
+// --- Slice 5: aggregate reads for budget enforcement and /admin/stats. ---
+// Same principle as above: every read crosses one zod schema on its way out
+// of the driver, so the rest of the app never touches `unknown`.
+
+const sumSchema = z.object({ total: z.number().nullable() });
+
+/** EUR spent by one key since an ISO timestamp. NULL costs sum as zero. */
+export function spendSince(apiKey: string, sinceIso: string): number {
+  const row = db
+    .prepare("SELECT SUM(cost_eur) AS total FROM requests WHERE api_key = ? AND ts >= ?")
+    .get(apiKey, sinceIso);
+  return sumSchema.parse(row).total ?? 0;
+}
+
+const spendByModelSchema = z.object({ model: z.string(), costEur: z.number() });
+
+export function spendByModelSince(sinceIso: string): { model: string; costEur: number }[] {
+  const rows = db
+    .prepare(
+      `SELECT model, SUM(cost_eur) AS costEur FROM requests
+       WHERE ts >= ? AND cost_eur IS NOT NULL GROUP BY model ORDER BY costEur DESC`,
+    )
+    .all(sinceIso);
+  return rows.map((row) => spendByModelSchema.parse(row));
+}
+
+const spendByKeySchema = z.object({ apiKey: z.string(), costEur: z.number() });
+
+export function spendByKeySince(sinceIso: string): { apiKey: string; costEur: number }[] {
+  const rows = db
+    .prepare(
+      `SELECT api_key AS apiKey, SUM(cost_eur) AS costEur FROM requests
+       WHERE ts >= ? AND cost_eur IS NOT NULL GROUP BY api_key ORDER BY costEur DESC`,
+    )
+    .all(sinceIso);
+  return rows.map((row) => spendByKeySchema.parse(row));
+}
+
+const countsSchema = z.object({ total: z.number(), blocked: z.number() });
+
+/** Total requests and how many a guardrail blocked (status 403). */
+export function requestCountsSince(sinceIso: string): { total: number; blocked: number } {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN status = 403 THEN 1 ELSE 0 END), 0) AS blocked
+       FROM requests WHERE ts >= ?`,
+    )
+    .get(sinceIso);
+  return countsSchema.parse(row);
+}
+
+/** Latencies of successful requests, sorted ascending — p95 is computed in JS. */
+export function successLatenciesSince(sinceIso: string): number[] {
+  const rows = db
+    .prepare(
+      `SELECT latency_ms FROM requests
+       WHERE ts >= ? AND status = 200 AND latency_ms IS NOT NULL ORDER BY latency_ms ASC`,
+    )
+    .all(sinceIso);
+  return rows.map((row) => z.object({ latency_ms: z.number() }).parse(row).latency_ms);
 }
