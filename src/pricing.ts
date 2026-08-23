@@ -24,11 +24,27 @@ const PRICES_EUR_PER_1K: Record<string, { input: number; output: number }> = {
  * as null, treated as zero spend) rather than crashing or guessing.
  */
 export function computeCostEur(model: string, usage: Usage): number | null {
-  const price = PRICES_EUR_PER_1K[model];
+  const price = priceFor(model);
   if (price === undefined) {
     return null;
   }
   return (usage.inputTokens * price.input + usage.outputTokens * price.output) / 1000;
+}
+
+/**
+ * Providers report versioned ids (e.g. "gpt-4o-mini-2024-07-18") while the
+ * table uses the base id. Exact match first, then the LONGEST table key the
+ * reported id starts with — longest, because "gpt-4o" is also a prefix of
+ * "gpt-4o-mini-..." and would price the wrong model if checked first.
+ */
+function priceFor(model: string): { input: number; output: number } | undefined {
+  const exact = PRICES_EUR_PER_1K[model];
+  if (exact !== undefined) {
+    return exact;
+  }
+  const byLengthDesc = Object.keys(PRICES_EUR_PER_1K).sort((a, b) => b.length - a.length);
+  const prefix = byLengthDesc.find((key) => model.startsWith(key));
+  return prefix === undefined ? undefined : PRICES_EUR_PER_1K[prefix];
 }
 
 /**
