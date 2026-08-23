@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    // Target a modern Node. Node 20+ supports everything here.
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+
+    // "bundler" resolution lets you write `import { x } from "./x"` with no
+    // file extension. We run everything through tsx, which resolves the same
+    // way, so dev and typecheck agree. There is no build step in v0.
+    "moduleResolution": "bundler",
+
+    "types": ["node"],
+    "rootDir": "src",
+    "noEmit": true,
+
+    // --- The part that matters. Do not soften these later. ---
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}
