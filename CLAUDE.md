@@ -68,15 +68,22 @@ scope from a later one.
   agent must review the docs diff against the actual code before committing —
   the docs go in their own small `docs: <slice>` commit right after the slice
   commit. Docs document only what exists, never future slices as if built.
-- `docs/USER.md` and `docs/TECHNICAL.md` are published as a GitHub Pages site
-  built from `docs/` on `main`. Two consequences worth knowing:
-  - The site rebuilds on push to `main`, so a docs commit on a feature branch
-    changes nothing publicly until it is merged. Merging is the publish step.
+- **All work stays on a feature branch. Never merge to `main` on your own.**
+  `main` is the published state: the repo is public and `docs/` on `main` is
+  served as a live GitHub Pages site, so anything that reaches `main` is
+  immediately public. Merging is therefore a deliberate act the author takes
+  after verifying the branch — not a step in this rhythm, not something to do
+  because a slice looks finished, and not something to offer to do "while
+  we're here". Commit and push to the branch, then stop and say it is ready.
+- Consequences of that setup worth knowing:
+  - A docs commit on a feature branch changes nothing publicly. The site only
+    rebuilds once the author merges, which is what makes the branch safe to
+    iterate on.
   - Any **new** file under `docs/` needs YAML front matter (`---` / `title:` /
     `---`) or Jekyll serves it as raw text. There is no build error to warn
     you, so it fails silently.
-- The repo is public. Keep it free of personal context, and remember the docs
-  site publishes automatically — review before merging to `main`.
+- The repo is public. Keep it free of personal context: no employer, client,
+  or company names, and nothing about who is building it or why.
 - After each slice, print the curl command that demonstrates it.
 - When a slice is done, say which slice is next and stop. Do not chain into the
   next slice without being asked.
