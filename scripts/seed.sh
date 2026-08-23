@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Seed the request log with ~20 varied requests so the dashboard and log are
-# not empty on a screen share. Run with the server up:  bash scripts/seed.sh
+# Seed the request log with ~20 varied requests so the dashboard and the log
+# have something to show. Run with the server up:  bash scripts/seed.sh
 # Total spend is well under one cent.
 set -u
 

@@ -8,9 +8,9 @@ description: >-
 # A theme GitHub Pages supports directly, so no Gemfile is needed.
 theme: jekyll-theme-cayman
 
-# Apply the layout from here rather than adding front matter to USER.md and
-# TECHNICAL.md. Those files stay plain markdown, readable in the repo and on
-# a phone, and the site picks them up unchanged.
+# Keep the layout configured here rather than repeating it in every file, so
+# the docs stay plain markdown that reads correctly in the repo as well as on
+# the site.
 defaults:
   - scope:
       path: ""

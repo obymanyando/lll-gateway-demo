@@ -468,7 +468,6 @@ something to look at.
 
 ## What's next
 
-Everything planned is built, cache included. `DEMO.md` has a six-step
-walkthrough of the whole gateway, with the curl for each step and the one
-sentence to say while it runs — that's the reference for demoing this, not
-this file.
+Everything planned is built, cache included. `WALKTHROUGH.md` steps through the
+whole gateway end to end, with the curl command for each capability — start
+there to see it all working.

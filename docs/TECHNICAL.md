@@ -4,7 +4,7 @@ title: Technical notes
 
 # Technical notes
 
-Internal notes for explaining this codebase out loud. Covers slices 1-7:
+How this codebase works and why it is built the way it is. Covers slices 1-7:
 provider adapters, the router, the SQLite request log, guardrails, cost
 accounting with budget enforcement, a RAG endpoint over embedded markdown
 chunks, and a static dashboard over `/admin/stats` — plus the stretch goal,
@@ -28,7 +28,7 @@ Request flow through `POST /v1/chat`:
    `GATEWAY_API_KEY`. Fail closed: no token, or the wrong token, is a 401.
 2. **Body validation** — the route handler parses `request.body` against a
    zod schema (`bodySchema` in `routes/chat.ts`). A failure here is a 400 with
-   the zod issues attached, and — this is the part worth saying out loud — it
+   the zod issues attached, and — this is the part that is easy to miss — it
    still writes a log row before returning.
 3. **Provider resolution** — `getProvider(body.provider)` looks up the named
    provider, or the first configured one if the caller didn't name one.
@@ -65,7 +65,7 @@ Request flow through `POST /v1/chat`:
     Failure returns `{ error, routing }` (routing only if we got past
     step 6).
 
-The property worth defending under questioning: **every outcome writes
+The property the whole design rests on: **every outcome writes
 exactly one log row.** Validation failure, unconfigured provider, provider
 error, and success all call `logRequest` exactly once, with `null` in
 whichever columns don't apply to that outcome. There's no code path in
@@ -468,9 +468,9 @@ exists here — both are future work, not implied by anything in this slice.
 **One static file, no framework.** `public/dashboard.html` is inline CSS
 and vanilla JS — no build step, no charting library. It renders three plain
 tables: requests (total / blocked / block rate / p95 latency), spend by
-model, and spend by key (with budget and remaining). No charts, because a
-table of numbers is what you'd want to defend under questioning, and a
-charting dependency isn't.
+model, and spend by key (with budget and remaining). No charts: exact numbers
+are what a spend dashboard is for, and a charting dependency would cost more
+than it adds here.
 
 **Why a route instead of a static-file plugin.** `registerDashboardRoute()`
 in `routes/dashboard.ts` is one `app.get` handler that `readFile`s the HTML
@@ -574,8 +574,8 @@ but that's the *provider* rate-limiting the gateway, mapped through
 `statusFor()`; `routes/chat.ts` returns it directly, before any provider
 call happens. Same HTTP status code, opposite actor: `rate_limited` means
 "the vendor said slow down", `over_budget` means "the gateway is refusing
-its own caller". Worth saying out loud precisely because the status code
-doesn't tell them apart — `error.kind` does.
+its own caller". The distinction matters precisely because the status code
+doesn't carry it — `error.kind` does.
 
 ## TypeScript ideas used here
 
@@ -650,9 +650,8 @@ not just satisfying the compiler.
 ## Closing note
 
 All planned slices, plus the stretch cache, are built — nothing on `PLAN.md`
-remains as code. What's left is demo prep, not engineering: `DEMO.md` has
-the six-step walkthrough with a spoken line per step, and
-`scripts/seed.sh` populates the request log with ~20 varied requests
-(misses, cache hits, every routing rule, both providers, redactions,
-blocks, validation failures, RAG queries) so the dashboard isn't empty on a
-screen share.
+remains as code. To see the whole thing working, `WALKTHROUGH.md` steps through
+every capability with the curl command for each, and `scripts/seed.sh`
+populates the request log with ~20 varied requests (misses, cache hits, every
+routing rule, both providers, redactions, blocks, validation failures, RAG
+queries) so the dashboard has something to show.

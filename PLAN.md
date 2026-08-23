@@ -1,20 +1,15 @@
 # PLAN.md
 
-**Status: all seven slices built and verified, plus the stretch cache. The
-final hour's assets exist (`scripts/seed.sh`, `DEMO.md`); what remains is the
-timed run-through, out loud.** The slice descriptions below are kept as the
-record of what was planned and why.
+**Status: all seven slices built and verified, plus the stretch cache.** The
+slice descriptions below are kept as the record of what was planned and why.
 
-Total budget: 8 to 10 hours. Slice 1 is spent. Roughly 7 hours of build left,
-plus a fixed final hour that is not code.
-
-Each slice ends in a working, demoable state. If time runs out mid-plan, the
-repo is still a coherent demo at whatever slice it stopped at. That is the
-point of the ordering.
+The ordering is the point: each slice ends in a working, demonstrable state,
+so the project is coherent at whatever slice it stops at rather than being a
+half-finished whole.
 
 ---
 
-## Slice 1 — Skeleton and provider adapters. DONE
+## Slice 1 — Skeleton and provider adapters
 
 Fastify, strict TypeScript, zod-validated config and request bodies, static
 bearer auth, two provider adapters behind one interface, real token usage
@@ -25,7 +20,7 @@ structured issues on a bad body, real HTTP round trip to the provider.
 
 ---
 
-## Slice 2 — Router (~1h)
+## Slice 2 — Router
 
 Turn the tier flag into an actual routing decision, and make the decision
 visible.
@@ -48,7 +43,7 @@ to `string`.
 
 ---
 
-## Slice 3 — Request log (~1h)
+## Slice 3 — Request log
 
 Add `better-sqlite3`. One table, `requests`, written on every request including
 blocked and failed ones.
@@ -68,7 +63,7 @@ small typed helper rather than casting at every call site.
 
 ---
 
-## Slice 4 — Guardrails (~1.25h)
+## Slice 4 — Guardrails
 
 Input and output, each a list of rules, each rule returning a structured
 verdict rather than a boolean.
@@ -91,10 +86,9 @@ sophistication.
 
 ---
 
-## Slice 5 — Cost and budget (~1.5h)
+## Slice 5 — Cost and budget
 
-The FinOps slice. This is the one that differentiates the demo, so protect its
-time.
+The FinOps slice, and the one that differentiates this from a proxy.
 
 Build:
 - A price table in code: per-1k input and output tokens, in EUR, per model.
@@ -110,7 +104,7 @@ Acceptance: set a tiny budget, spend past it, get a 429 with a clear body.
 
 ---
 
-## Slice 6 — RAG endpoint (~1.5h)
+## Slice 6 — RAG endpoint
 
 Ingest a folder of markdown, chunk at roughly 500 tokens with 50 overlap, embed
 each chunk, store vectors as a BLOB in SQLite, brute-force cosine at query
@@ -120,14 +114,14 @@ time.
 similarity scores and source filenames**. The scores being visible is what
 makes this demoable.
 
-No vector database. The honest interview answer is "brute force over a few
-hundred chunks, and here is exactly what I would swap at scale: pgvector or a
-managed store, hybrid retrieval, a reranker, and chunk-level access control."
-Build the seams, prepare the scale answer verbally.
+No vector database. Brute force over a few hundred chunks is milliseconds, and
+what would be swapped at scale is explicit: pgvector or a managed store, hybrid
+retrieval, a reranker, and chunk-level access control. Build the seams; leave
+the scaling to the point where it is actually needed.
 
 ---
 
-## Slice 7 — Dashboard (~1h)
+## Slice 7 — Dashboard
 
 One static HTML file served by Fastify, fetching `/admin/stats`. Plain tables.
 One sparkline only if it comes free. No framework, no build step, no charting
@@ -135,28 +129,25 @@ library.
 
 ---
 
-## Stretch, only if ahead after slice 5
+## Stretch
 
-Exact-hash response cache. Roughly 30 minutes. Turns the cost story from
+Exact-hash response cache. Turns the cost story from
 "I measured spend" into "I reduced spend". Log the `cache_hit` column that
 already exists.
 
 ---
 
-## The final hour — not code
+## After the build — not code
 
-Non-negotiable. Protect it.
+1. Seed data: `scripts/seed.sh` runs 20 or so varied requests so the dashboard
+   and the log are not empty.
+2. `WALKTHROUGH.md`: the capabilities in order, each with the exact curl
+   command that demonstrates it.
 
-1. Seed data: run 20 or so varied requests so the dashboard and log are not
-   empty on screen share.
-2. Write `DEMO.md`: six steps, in order, each with the exact curl command and
-   the one sentence said out loud while it runs.
-3. One live run-through, out loud, start to finish, timed.
-
-Suggested demo order: health and configured providers, a cheap request, the
-same request escalated by a routing rule, a request blocked by a guardrail, the
+Walkthrough order: health and configured providers, a cheap request, the same
+request escalated by a routing rule, a request blocked by a guardrail, the
 budget 429, a RAG query with visible scores, then the dashboard showing all of
 it.
 
-The largest failure risk on this project is not scope. It is hour eight,
-finding one more thing to add. Do not.
+The largest risk to this project is not scope. It is deciding, once it is
+finished, to add one more thing. Do not.

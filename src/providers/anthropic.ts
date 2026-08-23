@@ -6,9 +6,9 @@ import { classifyHttp, type Provider } from "./provider";
 /**
  * No SDK. Plain fetch against the Messages API.
  *
- * Reason: you need to see the wire format, and specifically where the token
- * usage numbers come from, because slice 4 (cost) is built on those two fields.
- * An SDK hides exactly the thing you are being interviewed about.
+ * Reason: the wire format matters here, specifically where the token usage
+ * numbers come from, because the cost layer is built on those two fields.
+ * An SDK would hide exactly the thing this project is about.
  */
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";

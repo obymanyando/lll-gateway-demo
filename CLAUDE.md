@@ -7,45 +7,31 @@ Project instructions. Read this before touching anything.
 A small LLM gateway built in TypeScript: routing, request logging, a guardrail
 layer, cost accounting with budget enforcement, and a RAG endpoint.
 
-Two purposes, in this order:
+It is a reference implementation on the theme of AI spend control and
+guardrails. Keep it vendor-neutral and generic: **do not name any company,
+client, or employer anywhere in this repo.**
 
-1. A live demo for a technical interview for an AI Platform Engineer role. It
-   will be walked through in a screen share and the author will be asked to
-   explain any line of it.
-2. Afterwards, a reusable proof asset for the author's independent AI
-   consulting practice, on the theme of AI spend control and guardrails.
-
-Because of purpose 2, **do not name any company, client, or employer anywhere
-in this repo.** Keep it vendor-neutral and generic.
-
-## Who you are working with
-
-The author has years of production JavaScript and React, and is deliberately
-building this in TypeScript to close a stated gap. Assume strong general
-engineering judgement and beginner-to-intermediate TypeScript.
-
-He is working from a phone while travelling. That has consequences:
+## How to work on it
 
 - **Small diffs.** One slice per commit, one concern per file. Never dump a
-  400-line change he has to scroll through on a phone.
-- **Explain in comments, not in chat.** When you use a TypeScript construct he
-  may not know, put a short `// TS note:` comment above it explaining what it
-  does and why. The comments are the teaching material and they survive the
-  session.
-- **Say what you changed in three lines max**, then stop. He will ask for more.
+  400-line change into a single review.
+- **Explain in comments, not in chat.** When a TypeScript construct is not
+  self-evident, put a short `// TS note:` comment above it explaining what it
+  does and why. The comments are the documentation that survives.
+- **Say what changed in three lines max**, then stop.
 
 ## The constraint that matters most
 
-He must be able to explain this code out loud, under questioning, without
-notes. That outranks cleverness, completeness, and elegance.
+Every line here should be defensible in a code review without notes. That
+outranks cleverness, completeness, and elegance.
 
 So: prefer the boring construct over the sophisticated one. If a fancier type
 would save five lines but take ten minutes to explain, use the boring version.
 No type gymnastics, no conditional types, no decorators, no clever generics
 beyond what is already in `env.ts`.
 
-If you are about to write something he would struggle to defend, write the
-simpler thing and say so.
+If you are about to write something hard to justify to the next reader, write
+the simpler thing and say so.
 
 ## Non-negotiables
 
@@ -58,9 +44,8 @@ simpler thing and say so.
 - Failures return `Result`, they do not throw. See `src/types.ts`.
 - Provider HTTP calls stay as plain `fetch`. No vendor SDKs. The token usage
   fields are the whole point of the cost layer and an SDK hides them.
-- Dependencies stay minimal. Current list is fastify, zod, pino-pretty. Adding
-  one more needs a reason stated first. `better-sqlite3` is pre-approved for
-  slice 3.
+- Dependencies stay minimal: fastify, zod, pino-pretty, better-sqlite3. Adding
+  one more needs a reason stated first.
 
 ## Hard cut list
 
@@ -71,8 +56,8 @@ Kubernetes, a React or Vue frontend, a build step, a vector database,
 reranking, hybrid search, OpenTelemetry, a test framework beyond a handful of
 plain assertions on guardrail rules.
 
-If a slice is running long, cut depth inside that slice. Do not borrow time
-from a later one.
+If a slice is running long, cut depth inside that slice rather than borrowing
+scope from a later one.
 
 ## Working rhythm
 
@@ -90,15 +75,16 @@ from a later one.
   - Any **new** file under `docs/` needs YAML front matter (`---` / `title:` /
     `---`) or Jekyll serves it as raw text. There is no build error to warn
     you, so it fails silently.
-- After each slice, print the curl command that demonstrates it, so he can
-  verify from the phone.
+- The repo is public. Keep it free of personal context, and remember the docs
+  site publishes automatically — review before merging to `main`.
+- After each slice, print the curl command that demonstrates it.
 - When a slice is done, say which slice is next and stop. Do not chain into the
   next slice without being asked.
 
 ## State
 
 All seven slices are complete and verified, plus the stretch response cache.
-Demo assets exist: `DEMO.md` (the walkthrough) and `scripts/seed.sh`.
+`WALKTHROUGH.md` and `scripts/seed.sh` exercise the whole thing end to end.
 Documentation lives in `docs/TECHNICAL.md` and `docs/USER.md`.
 
 Nothing on `PLAN.md` remains as code. Before adding anything new, re-read the

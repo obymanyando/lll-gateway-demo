@@ -4,10 +4,10 @@ import { env } from "./env";
 /**
  * v0 auth: one static key in an Authorization: Bearer header.
  *
- * The reason it exists at all is that slice 4 attributes cost per key. Without
+ * The reason it exists at all is that slice 5 attributes cost per key. Without
  * a caller identity there is nothing to bill, budget, or cut off. Real key
- * management is deliberately out of scope, and saying so in the interview is a
- * better answer than half-building it.
+ * management is deliberately out of scope: a named limitation is more honest
+ * than a half-built one.
  */
 /** The bearer token as presented, or undefined. Also used by the request log. */
 export function bearerToken(req: FastifyRequest): string | undefined {
