@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway dashboard</title>
+<style>
+  /* Deliberately plain. One file, no framework, no build step. */
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 720px; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1rem; margin-top: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+  th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #ddd; font-size: .9rem; }
+  th { background: #f5f5f5; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #controls { display: flex; gap: .5rem; margin: 1rem 0; }
+  #key { flex: 1; padding: .4rem; }
+  button { padding: .4rem .9rem; }
+  #status { font-size: .85rem; color: #666; margin-top: .5rem; }
+  .err { color: #b00020; }
+</style>
+</head>
+<body>
+<h1>LLM gateway — month to date</h1>
+
+<div id="controls">
+  <input id="key" type="password" placeholder="Gateway API key">
+  <button id="load">Load</button>
+</div>
+<div id="status">Enter the gateway API key and press Load. Refreshes every 10s.</div>
+
+<h2>Requests</h2>
+<table>
+  <thead><tr><th>Total</th><th class="num">Blocked</th><th class="num">Block rate</th><th class="num">p95 latency</th></tr></thead>
+  <tbody id="requests"><tr><td colspan="4">—</td></tr></tbody>
+</table>
+
+<h2>Spend by model</h2>
+<table>
+  <thead><tr><th>Model</th><th class="num">Spend (EUR)</th></tr></thead>
+  <tbody id="byModel"><tr><td colspan="2">—</td></tr></tbody>
+</table>
+
+<h2>Spend by key</h2>
+<table>
+  <thead><tr><th>API key</th><th class="num">Spend (EUR)</th><th class="num">Budget</th><th class="num">Remaining</th></tr></thead>
+  <tbody id="byKey"><tr><td colspan="4">—</td></tr></tbody>
+</table>
+
+<script>
+  // Plain fetch against /admin/stats — the same endpoint curl uses. The page
+  // holds no data of its own and bakes in no key: the caller provides it,
+  // and it is kept in localStorage purely for convenience between reloads.
+  const $ = (id) => document.getElementById(id);
+  let timer = null;
+
+  $("key").value = localStorage.getItem("gatewayKey") ?? "";
+  $("load").addEventListener("click", start);
+
+  function start() {
+    localStorage.setItem("gatewayKey", $("key").value);
+    if (timer !== null) clearInterval(timer);
+    refresh();
+    timer = setInterval(refresh, 10_000);
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch("/admin/stats", {
+        headers: { authorization: "Bearer " + $("key").value },
+      });
+      if (!res.ok) {
+        $("status").innerHTML = '<span class="err">HTTP ' + res.status + " from /admin/stats</span>";
+        return;
+      }
+      render(await res.json());
+      $("status").textContent = "Updated " + new Date().toLocaleTimeString() + " — since " + latest.since;
+    } catch (e) {
+      $("status").innerHTML = '<span class="err">' + String(e) + "</span>";
+    }
+  }
+
+  let latest = { since: "" };
+
+  function render(stats) {
+    latest = stats;
+    const eur = (n) => n.toFixed(6);
+    const pct = (n) => (n * 100).toFixed(1) + "%";
+
+    $("requests").innerHTML =
+      "<tr><td>" + stats.requests.total + "</td>" +
+      '<td class="num">' + stats.requests.blocked + "</td>" +
+      '<td class="num">' + pct(stats.requests.blockRate) + "</td>" +
+      '<td class="num">' + (stats.p95LatencyMs === null ? "—" : stats.p95LatencyMs + " ms") + "</td></tr>";
+
+    $("byModel").innerHTML = stats.spendByModel.length === 0
+      ? '<tr><td colspan="2">no spend yet</td></tr>'
+      : stats.spendByModel.map((r) =>
+          "<tr><td>" + r.model + '</td><td class="num">' + eur(r.costEur) + "</td></tr>").join("");
+
+    $("byKey").innerHTML = stats.spendByKey.length === 0
+      ? '<tr><td colspan="4">no spend yet</td></tr>'
+      : stats.spendByKey.map((r) =>
+          "<tr><td>" + r.apiKey + '</td><td class="num">' + eur(r.costEur) +
+          '</td><td class="num">' + eur(r.budgetEur) +
+          '</td><td class="num">' + eur(r.budgetRemainingEur) + "</td></tr>").join("");
+  }
+</script>
+</body>
+</html>

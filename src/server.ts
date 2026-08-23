@@ -3,6 +3,7 @@ import { env } from "./env";
 import { providers } from "./providers/registry";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerChatRoute } from "./routes/chat";
+import { registerDashboardRoute } from "./routes/dashboard";
 import { registerRagRoute } from "./routes/rag";
 
 const app = Fastify({
@@ -20,6 +21,7 @@ app.get("/health", async () => ({
 registerChatRoute(app);
 registerAdminRoutes(app);
 registerRagRoute(app);
+registerDashboardRoute(app);
 
 async function main(): Promise<void> {
   try {
