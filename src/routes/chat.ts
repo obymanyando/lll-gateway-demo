@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireApiKey } from "../auth";
 import { getProvider } from "../providers/registry";
-import type { ProviderError, Tier } from "../types";
+import { estimateInputTokens, route } from "../router";
+import type { ProviderError } from "../types";
 
 /**
  * Request contract. Written once, as a zod schema, and the TypeScript type is
@@ -19,6 +20,8 @@ const bodySchema = z.object({
     .min(1),
   system: z.string().optional(),
   tier: z.enum(["cheap", "strong"]).default("cheap"),
+  // Optional hint for the router. Not passed to the provider.
+  task: z.enum(["code", "analysis"]).optional(),
   provider: z.enum(["anthropic", "openai"]).optional(),
   maxTokens: z.number().int().min(1).max(4096).default(1024),
   temperature: z.number().min(0).max(2).default(0.7),
@@ -43,10 +46,17 @@ export function registerChatRoute(app: FastifyInstance): void {
       });
     }
 
-    const tier: Tier = body.tier;
-    const model = provider.modelFor(tier);
+    // Slice 2: the tier flag is now an input to the router, not the answer.
+    const decision = route(
+      {
+        requestedTier: body.tier,
+        ...(body.task !== undefined ? { task: body.task } : {}),
+        estimatedInputTokens: estimateInputTokens(body.messages, body.system),
+      },
+      provider,
+    );
 
-    const result = await provider.complete(model, {
+    const result = await provider.complete(decision.model, {
       messages: body.messages,
       ...(body.system !== undefined ? { system: body.system } : {}),
       maxTokens: body.maxTokens,
@@ -56,7 +66,9 @@ export function registerChatRoute(app: FastifyInstance): void {
     // The discriminated union in action. Inside this branch TS knows
     // `result.value` exists; in the other branch it knows `result.error` does.
     if (!result.ok) {
-      return reply.code(statusFor(result.error)).send({ error: result.error });
+      // Failures carry the routing decision too: "what were we about to spend
+      // money on" is part of the audit trail even when the call never landed.
+      return reply.code(statusFor(result.error)).send({ error: result.error, routing: decision });
     }
 
     const { value } = result;
@@ -65,7 +77,8 @@ export function registerChatRoute(app: FastifyInstance): void {
       {
         provider: value.provider,
         model: value.model,
-        tier,
+        tier: decision.tier,
+        ruleId: decision.ruleId,
         inputTokens: value.usage.inputTokens,
         outputTokens: value.usage.outputTokens,
         latencyMs: value.latencyMs,
@@ -78,7 +91,7 @@ export function registerChatRoute(app: FastifyInstance): void {
       // These two numbers are the ones slice 4 multiplies by a price table.
       // Returning them now means the cost slice has nothing left to discover.
       usage: value.usage,
-      routing: { provider: value.provider, model: value.model, tier },
+      routing: decision,
       latencyMs: value.latencyMs,
     });
   });
