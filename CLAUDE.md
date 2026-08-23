@@ -83,6 +83,13 @@ from a later one.
   agent must review the docs diff against the actual code before committing —
   the docs go in their own small `docs: <slice>` commit right after the slice
   commit. Docs document only what exists, never future slices as if built.
+- `docs/USER.md` and `docs/TECHNICAL.md` are published as a GitHub Pages site
+  built from `docs/` on `main`. Two consequences worth knowing:
+  - The site rebuilds on push to `main`, so a docs commit on a feature branch
+    changes nothing publicly until it is merged. Merging is the publish step.
+  - Any **new** file under `docs/` needs YAML front matter (`---` / `title:` /
+    `---`) or Jekyll serves it as raw text. There is no build error to warn
+    you, so it fails silently.
 - After each slice, print the curl command that demonstrates it, so he can
   verify from the phone.
 - When a slice is done, say which slice is next and stop. Do not chain into the
