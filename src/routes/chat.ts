@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { bearerToken, requireApiKey } from "../auth";
+import { cacheGet, cacheKey, cacheSet } from "../cache";
 import { logRequest, spendSince } from "../db";
 import { guardInput, guardOutput } from "../guardrails";
 import { budgetEurFor, computeCostEur, monthStartIso } from "../pricing";
@@ -55,6 +56,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: null,
         blockedReason: null,
+        cacheHit: null,
         status: 400,
       });
       return reply.code(400).send({
@@ -77,6 +79,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: null,
         blockedReason: null,
+        cacheHit: null,
         status: 400,
       });
       return reply.code(400).send({
@@ -103,6 +106,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: null,
         blockedReason: null,
+        cacheHit: null,
         status: 429,
       });
       return reply.code(429).send({
@@ -132,6 +136,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: `block:${guard.ruleId}`,
         blockedReason: guard.reason,
+        cacheHit: null,
         status: 403,
       });
       return reply.code(403).send({
@@ -149,6 +154,38 @@ export function registerChatRoute(app: FastifyInstance): void {
       },
       provider,
     );
+
+    // Stretch: exact-hash cache. Keyed on the redacted input and the routed
+    // model, checked only after budget and guardrails have said yes — a hit
+    // must not become a way around policy.
+    const key = cacheKey(decision.model, guard.messages, guard.system, body.maxTokens, body.temperature);
+    const cached = cacheGet(key);
+    if (cached !== undefined) {
+      logRequest({
+        apiKey,
+        routeRule: decision.ruleId,
+        provider: cached.provider,
+        model: cached.model,
+        tier: decision.tier,
+        inputTokens: null,
+        outputTokens: null,
+        costEur: 0,
+        latencyMs: Date.now() - startedAt,
+        guardrailVerdict: verdictLabel(guard.redactedBy),
+        blockedReason: null,
+        cacheHit: true,
+        status: 200,
+      });
+      return reply.send({
+        text: cached.text,
+        usage: cached.usage,
+        costEur: 0,
+        routing: decision,
+        guardrails: { verdict: verdictLabel(guard.redactedBy), redactedBy: guard.redactedBy },
+        cacheHit: true,
+        latencyMs: Date.now() - startedAt,
+      });
+    }
 
     const result = await provider.complete(decision.model, {
       messages: guard.messages,
@@ -173,6 +210,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: verdictLabel(guard.redactedBy),
         blockedReason: null,
+        cacheHit: null,
         status,
       });
       // Failures carry the routing decision too: "what were we about to spend
@@ -201,6 +239,7 @@ export function registerChatRoute(app: FastifyInstance): void {
         latencyMs: value.latencyMs,
         guardrailVerdict: `block:${outGuard.ruleId}`,
         blockedReason: outGuard.reason,
+        cacheHit: null,
         status: 403,
       });
       return reply.code(403).send({
@@ -211,6 +250,15 @@ export function registerChatRoute(app: FastifyInstance): void {
 
     const redactedBy = [...guard.redactedBy, ...outGuard.redactedBy];
     const costEur = computeCostEur(value.model, value.usage);
+
+    // Store only what passed the output guardrails — a hit replays a response
+    // that was already judged safe to return.
+    cacheSet(key, {
+      text: outGuard.text,
+      usage: value.usage,
+      provider: value.provider,
+      model: value.model,
+    });
 
     logRequest({
       apiKey,
@@ -224,6 +272,7 @@ export function registerChatRoute(app: FastifyInstance): void {
       latencyMs: value.latencyMs,
       guardrailVerdict: verdictLabel(redactedBy),
       blockedReason: null,
+      cacheHit: false,
       status: 200,
     });
 
@@ -248,6 +297,7 @@ export function registerChatRoute(app: FastifyInstance): void {
       routing: decision,
       // Like routing: the verdict is visible, not just logged.
       guardrails: { verdict: verdictLabel(redactedBy), redactedBy },
+      cacheHit: false,
       latencyMs: value.latencyMs,
     });
   });

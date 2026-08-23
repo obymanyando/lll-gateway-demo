@@ -51,6 +51,8 @@ export function registerRagRoute(app: FastifyInstance): void {
         latencyMs: Date.now() - startedAt,
         guardrailVerdict: entry.guardrailVerdict ?? null,
         blockedReason: entry.blockedReason ?? null,
+        // RAG answers are not cached in v0.
+        cacheHit: null,
         status: entry.status,
       });
     };

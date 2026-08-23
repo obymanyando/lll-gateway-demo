@@ -71,6 +71,8 @@ export type RequestLogEntry = {
   guardrailVerdict: string | null;
   /** Human-readable reason, only when blocked. */
   blockedReason: string | null;
+  /** true/false on completions that consulted the cache; null everywhere else. */
+  cacheHit: boolean | null;
   status: number;
 };
 
@@ -80,7 +82,7 @@ const insertStmt = db.prepare(`
     blocked_reason, cache_hit, status)
   VALUES (@id, @ts, @apiKey, @routeRule, @provider, @model, @tier,
     @inputTokens, @outputTokens, @costEur, @latencyMs, @guardrailVerdict,
-    @blockedReason, NULL, @status)
+    @blockedReason, @cacheHit, @status)
 `);
 
 /**
@@ -89,7 +91,13 @@ const insertStmt = db.prepare(`
  */
 export function logRequest(entry: RequestLogEntry): void {
   try {
-    insertStmt.run({ id: randomUUID(), ts: new Date().toISOString(), ...entry });
+    insertStmt.run({
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      ...entry,
+      // SQLite has no boolean; store 1/0/NULL.
+      cacheHit: entry.cacheHit === null ? null : entry.cacheHit ? 1 : 0,
+    });
   } catch (cause) {
     console.error("request log write failed:", cause);
   }
