@@ -22,6 +22,9 @@ const schema = z.object({
 
   GATEWAY_API_KEY: z.string().min(1, "Set GATEWAY_API_KEY in .env"),
 
+  // SQLite file for the request log. Gitignored via *.db.
+  DB_PATH: z.string().default("gateway.db"),
+
   // At least one of these must be present. Checked in .refine() below.
   // `emptyAsUndefined` matters: a copied .env.example leaves the unused key as
   // an empty string, and an empty string is not the same as "not configured".

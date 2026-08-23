@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { requireApiKey } from "../auth";
+import { bearerToken, requireApiKey } from "../auth";
+import { logRequest } from "../db";
 import { getProvider } from "../providers/registry";
 import { estimateInputTokens, route } from "../router";
 import type { ProviderError } from "../types";
@@ -31,8 +32,26 @@ export type ChatBody = z.infer<typeof bodySchema>;
 
 export function registerChatRoute(app: FastifyInstance): void {
   app.post("/v1/chat", { preHandler: requireApiKey }, async (request, reply) => {
+    // Auth already passed, so the token is our key; fall back defensively.
+    const apiKey = bearerToken(request) ?? "unknown";
+    // Slice 3: every request that reaches this handler ends in exactly one
+    // logRequest call, whatever the outcome. Rejections log nulls for the
+    // fields that never happened (no route, no model, no tokens).
+    const startedAt = Date.now();
+
     const parsed = bodySchema.safeParse(request.body);
     if (!parsed.success) {
+      logRequest({
+        apiKey,
+        routeRule: null,
+        provider: null,
+        model: null,
+        tier: null,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: Date.now() - startedAt,
+        status: 400,
+      });
       return reply.code(400).send({
         error: { kind: "bad_request", issues: parsed.error.issues },
       });
@@ -41,6 +60,17 @@ export function registerChatRoute(app: FastifyInstance): void {
 
     const provider = getProvider(body.provider);
     if (provider === undefined) {
+      logRequest({
+        apiKey,
+        routeRule: null,
+        provider: body.provider ?? null,
+        model: null,
+        tier: null,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: Date.now() - startedAt,
+        status: 400,
+      });
       return reply.code(400).send({
         error: { kind: "bad_request", message: `Provider not configured: ${body.provider}` },
       });
@@ -66,12 +96,36 @@ export function registerChatRoute(app: FastifyInstance): void {
     // The discriminated union in action. Inside this branch TS knows
     // `result.value` exists; in the other branch it knows `result.error` does.
     if (!result.ok) {
+      const status = statusFor(result.error);
+      logRequest({
+        apiKey,
+        routeRule: decision.ruleId,
+        provider: decision.provider,
+        model: decision.model,
+        tier: decision.tier,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: Date.now() - startedAt,
+        status,
+      });
       // Failures carry the routing decision too: "what were we about to spend
       // money on" is part of the audit trail even when the call never landed.
-      return reply.code(statusFor(result.error)).send({ error: result.error, routing: decision });
+      return reply.code(status).send({ error: result.error, routing: decision });
     }
 
     const { value } = result;
+
+    logRequest({
+      apiKey,
+      routeRule: decision.ruleId,
+      provider: value.provider,
+      model: value.model,
+      tier: decision.tier,
+      inputTokens: value.usage.inputTokens,
+      outputTokens: value.usage.outputTokens,
+      latencyMs: value.latencyMs,
+      status: 200,
+    });
 
     request.log.info(
       {
