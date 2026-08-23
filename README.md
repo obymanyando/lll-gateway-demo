@@ -1,9 +1,14 @@
 # llm-gateway
 
-A small LLM gateway in TypeScript. Slice 1 of 7.
+A small LLM gateway in TypeScript. Slices 1-3 of 7 done.
 
-Built: routing seam, typed provider adapters, request validation, static key auth, real token usage returned.
-Next: router rules, SQLite request log, guardrails, cost and budget, RAG endpoint.
+Built: typed provider adapters, request validation, static key auth, real token
+usage returned, a rules-based router with visible route decisions, and a SQLite
+request log written on every outcome.
+Next: guardrails, cost and budget, RAG endpoint, dashboard.
+
+Docs: [docs/USER.md](docs/USER.md) (running and calling it) ·
+[docs/TECHNICAL.md](docs/TECHNICAL.md) (how it works inside).
 
 ## Run it
 

@@ -78,6 +78,11 @@ from a later one.
 
 - One git commit per slice, message format: `slice N: <what it does>`.
 - Run `npm run typecheck` before every commit. It must be clean.
+- After each slice is verified: spawn a subagent on Sonnet to update
+  `docs/TECHNICAL.md` and `docs/USER.md` for what that slice added. The main
+  agent must review the docs diff against the actual code before committing —
+  the docs go in their own small `docs: <slice>` commit right after the slice
+  commit. Docs document only what exists, never future slices as if built.
 - After each slice, print the curl command that demonstrates it, so he can
   verify from the phone.
 - When a slice is done, say which slice is next and stop. Do not chain into the
