@@ -1,11 +1,8 @@
 # KICKOFF.md
 
-The first message to send Claude Code. Copy the block below verbatim.
-
----
 
 ```
-Read CLAUDE.md, PLAN.md, and HANDOFF.md before doing anything.
+Read CLAUDE.md, PLAN.md, and HANDOFF.md before doing anything. 
 
 Context: I'm building an LLM gateway in TypeScript as a live demo for a
 technical interview. I have production JavaScript experience but I'm new to
