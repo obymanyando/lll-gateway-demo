@@ -11,7 +11,9 @@ all. Nothing planned is left to build — see "what's next" at the end.
 
 ## Prerequisites
 
-Node 20 or newer. There is no build step; `tsx` runs the TypeScript directly.
+Node 20.12 or newer — that is where `--env-file-if-exists` landed, which the
+npm scripts use so a missing `.env` is not a startup error. There is no build
+step; `tsx` runs the TypeScript directly.
 
 ## Setup
 
@@ -37,7 +39,7 @@ npm run ingest        # chunk + embed rag-docs/*.md, rebuild the chunks table
 |---|---|---|
 | `PORT` | `8080` | no |
 | `GATEWAY_API_KEY` | — | **yes** — callers send this as `Authorization: Bearer <value>` |
-| `DB_PATH` | `gateway.db` | no — SQLite file for the request log |
+| `DB_PATH` | `gateway.db` | no — SQLite file for the request log. Deployed, this must point at a persistent volume; see [Deploying it](#deploying-it) |
 | `MONTHLY_BUDGET_EUR` | `25` | no — per-API-key monthly spend ceiling, in EUR |
 | `ANTHROPIC_API_KEY` | — | at least one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is required |
 | `OPENAI_API_KEY` | — | see above — also **required for RAG** (`npm run ingest` and `/v1/rag/query`), even if chat is running entirely on Anthropic, because embeddings are OpenAI-only today |
@@ -48,6 +50,99 @@ npm run ingest        # chunk + embed rag-docs/*.md, rebuild the chunks table
 
 If neither provider key is set, or `GATEWAY_API_KEY` is missing, the process
 prints the validation errors and exits — it will not start half-configured.
+
+The `.env` file itself is optional. The scripts load it with
+`--env-file-if-exists`, so a host that injects variables into the process
+directly — as a platform deploy does — needs no file and prints `.env not
+found. Continuing without it.` on the way up.
+
+## Deploying it
+
+The gateway is a single process with a SQLite file next to it. That file is the
+ledger: month-to-date spend is a sum over it, the dashboard reads it, and the
+RAG chunks live in it. So the one hosting requirement that matters is a
+**persistent disk**. On an ephemeral filesystem the gateway still starts, still
+answers, and still looks correct — while budget enforcement silently never
+accumulates and retrieval comes back empty after every redeploy. There is no
+error to notice.
+
+These notes use Railway, which offers a volume on its cheapest paid tier. Any
+host with a mounted disk works the same way.
+
+### 1. Variables
+
+| variable | value |
+|---|---|
+| `DB_PATH` | `/data/gateway.db` — inside the mounted volume, not beside the code |
+| `GATEWAY_API_KEY` | a fresh random string. **Not** the `dev-local-key-change-me` placeholder |
+| `ANTHROPIC_API_KEY` | a live key |
+| `OPENAI_API_KEY` | a live key — also required for RAG embeddings |
+| `MONTHLY_BUDGET_EUR` | set this **low**, e.g. `5` |
+
+Leave `PORT` unset. The platform assigns one and the server reads it; it
+already binds `0.0.0.0`.
+
+`MONTHLY_BUDGET_EUR` is doing real work here. A public endpoint spending real
+provider money is protected by exactly one static bearer token — that is the
+deliberate v0 scope described in [What's next](#whats-next), not an oversight.
+The budget ceiling is what bounds the damage if that token leaks, because it
+returns 429 *before* a provider is called. Set it to a number you would not
+mind losing.
+
+### 2. Volume
+
+Mount a volume at `/data`. This has to exist before the first request, not
+before the first deploy — but a deploy that runs without it writes a database
+the next deploy will not see.
+
+### 3. Deploy
+
+`railway.json` in the repo root declares the build (Nixpacks — no Dockerfile),
+the start command, and `/health` as the healthcheck path. There is no build
+step: `tsx` runs the TypeScript directly and ships as a runtime dependency.
+
+Confirm it came up, and that the resolved database path is the volume and not
+the container:
+
+```bash
+curl -s https://<your-app>/health
+# {"status":"ok","providers":["anthropic","openai"]}
+```
+
+The deploy log prints `request log: /data/gateway.db` at boot. If it prints
+anything else, the volume is not mounted where `DB_PATH` points and nothing
+persists.
+
+### 4. Ingest, once
+
+`/v1/rag/query` returns nothing until the chunks table is built, and the
+chunks live in the database on the volume — which only the service itself can
+reach. So the ingest runs there, once, after the first successful deploy:
+
+```bash
+railway ssh
+npm run ingest
+```
+
+Re-run it whenever `rag-docs/` changes. It wipes and rebuilds the table.
+
+### 5. Check it end to end
+
+`scripts/seed.sh` already reads both values from the environment, so it points
+at the deployment unchanged:
+
+```bash
+curl -s https://<your-app>/health
+GATEWAY_URL=https://<your-app> GATEWAY_API_KEY=<your key> bash scripts/seed.sh
+```
+
+Then prove the volume is real — the failure this whole section is about is the
+one that looks fine:
+
+```bash
+curl -s https://<your-app>/admin/stats -H 'authorization: Bearer <your key>'
+# note spendByKey[].costEur, redeploy, ask again — unchanged, not reset to zero
+```
 
 ## Endpoints
 

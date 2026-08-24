@@ -38,7 +38,9 @@ cp .env.example .env
 npm run dev
 ```
 
-Requires Node 20 or newer. There is no build step; `tsx` runs TypeScript
+Requires Node 20.12 or newer — that is where `--env-file-if-exists`, which
+the npm scripts use to make `.env` optional, landed. There is no build step;
+`tsx` runs TypeScript
 directly and `npm run typecheck` runs the compiler in strict mode.
 
 ```bash
