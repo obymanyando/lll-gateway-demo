@@ -4,23 +4,26 @@
   "private": true,
   "type": "module",
   "description": "A small LLM gateway: routing, request logging, guardrails, cost control, RAG.",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "tsx watch --env-file=.env src/server.ts",
-    "start": "tsx --env-file=.env src/server.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "start": "tsx --env-file-if-exists=.env src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx src/guardrails.test.ts",
-    "ingest": "tsx --env-file=.env src/rag/ingest.ts"
+    "ingest": "tsx --env-file-if-exists=.env src/rag/ingest.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "fastify": "^5.2.1",
     "pino-pretty": "^13.0.0",
+    "tsx": "^4.19.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.10.5",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }

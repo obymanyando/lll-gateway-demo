@@ -38,7 +38,9 @@ cp .env.example .env
 npm run dev
 ```
 
-Requires Node 20 or newer. There is no build step; `tsx` runs TypeScript
+Requires Node 22 or newer, because `better-sqlite3` does. (The npm scripts also
+use `--env-file-if-exists`, which needs 20.12+, so 22 clears both bars.) There
+is no build step; `tsx` runs TypeScript
 directly and `npm run typecheck` runs the compiler in strict mode.
 
 ```bash

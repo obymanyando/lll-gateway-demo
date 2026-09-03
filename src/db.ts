@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import { env } from "./env";
@@ -14,7 +16,17 @@ import { env } from "./env";
  * migration. Slice 4 filled the guardrail columns, slice 5 filled cost_eur.
  */
 
-const db = new Database(env.DB_PATH);
+// Deployed, DB_PATH points at a mounted volume (/data/gateway.db). Create the
+// directory first: better-sqlite3 otherwise fails with an opaque "unable to
+// open database file". The resolved path is logged at boot because the bad
+// case is silent — an unmounted volume falls back to the container's own
+// filesystem, and the gateway runs happily while spend, the dashboard, and the
+// RAG chunks reset on every redeploy.
+const dbPath = path.resolve(env.DB_PATH);
+mkdirSync(path.dirname(dbPath), { recursive: true });
+console.log(`request log: ${dbPath}`);
+
+const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 
 db.exec(`
