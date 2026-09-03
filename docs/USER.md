@@ -11,9 +11,16 @@ all. Nothing planned is left to build — see "what's next" at the end.
 
 ## Prerequisites
 
-Node 20.12 or newer — that is where `--env-file-if-exists` landed, which the
-npm scripts use so a missing `.env` is not a startup error. There is no build
-step; `tsx` runs the TypeScript directly.
+Node 22 or newer. `better-sqlite3` declares `{"node": ">=22"}`, and that is the
+binding constraint. The npm scripts additionally use `--env-file-if-exists`, so
+a missing `.env` is not a startup error; that flag landed in 20.12, which 22
+comfortably clears.
+
+`engines.node` in `package.json` says the same thing, and a platform that picks
+a Node version from it will honour the floor — so getting this wrong means a
+deploy silently builds against an unsupported runtime.
+
+There is no build step; `tsx` runs the TypeScript directly.
 
 ## Setup
 
