@@ -97,9 +97,19 @@ the next deploy will not see.
 
 ### 3. Deploy
 
-`railway.json` in the repo root declares the build (Nixpacks — no Dockerfile),
-the start command, and `/health` as the healthcheck path. There is no build
-step: `tsx` runs the TypeScript directly and ships as a runtime dependency.
+`railway.json` in the repo root declares the start command and `/health` as the
+healthcheck path. It deliberately does not name a builder: Railpack is the
+default and detects a Node project on its own, and naming a builder Railway no
+longer accepts causes the whole file to be ignored — silently, taking the start
+command and healthcheck with it.
+
+There is no build step: `tsx` runs the TypeScript directly and ships as a
+runtime dependency.
+
+One expiry to know about: Railway has deprecated config-as-code, and
+`railway.json` keeps working only until **2026-12-01**. After that these two
+settings move to the service's own build/deploy settings, or to Railway's
+Infrastructure as Code.
 
 Confirm it came up, and that the resolved database path is the volume and not
 the container:
