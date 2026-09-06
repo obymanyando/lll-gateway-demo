@@ -76,7 +76,7 @@ curl -s -X POST localhost:8080/v1/chat \
   "costEur": 0.000053,
   "routing": {
     "provider": "anthropic",
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-haiku-4-5",
     "tier": "cheap",
     "ruleId": "default-cheap",
     "reason": "no routing rule matched; defaulting to the cheap tier"
