@@ -51,7 +51,7 @@ npm run ingest        # chunk + embed rag-docs/*.md, rebuild the chunks table
 | `ANTHROPIC_API_KEY` | — | at least one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is required |
 | `OPENAI_API_KEY` | — | see above — also **required for RAG** (`npm run ingest` and `/v1/rag/query`), even if chat is running entirely on Anthropic, because embeddings are OpenAI-only today |
 | `ANTHROPIC_MODEL_CHEAP` | `claude-haiku-4-5` | no |
-| `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-5` | no |
+| `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-4-6` | no |
 | `OPENAI_MODEL_CHEAP` | `gpt-4o-mini` | no |
 | `OPENAI_MODEL_STRONG` | `gpt-4o` | no |
 
@@ -375,7 +375,7 @@ curl -s localhost:8080/admin/stats \
   "requests": { "total": 42, "blocked": 3, "blockRate": 0.071429 },
   "p95LatencyMs": 1180,
   "spendByModel": [
-    { "model": "claude-sonnet-5", "costEur": 0.031402 },
+    { "model": "claude-sonnet-4-6", "costEur": 0.031402 },
     { "model": "claude-haiku-4-5", "costEur": 0.004881 }
   ],
   "spendByKey": [
