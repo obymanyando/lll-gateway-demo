@@ -51,23 +51,37 @@ npm run ingest        # chunk + embed rag-docs/*.md, rebuild the chunks table
 | `ANTHROPIC_API_KEY` | — | at least one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is required |
 | `OPENAI_API_KEY` | — | see above — also **required for RAG** (`npm run ingest` and `/v1/rag/query`), even if chat is running entirely on Anthropic, because embeddings are OpenAI-only today |
 | `ANTHROPIC_MODEL_CHEAP` | `claude-haiku-4-5` | no — see the note below before changing |
-| `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-4-6` | no — see the note below before changing |
+| `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-5` | no — see the note below before changing |
 | `OPENAI_MODEL_CHEAP` | `gpt-4o-mini` | no |
 | `OPENAI_MODEL_STRONG` | `gpt-4o` | no |
 
-Changing a model id is not always only a config change. Newer Anthropic model
-generations have **removed the sampling parameters**, and this gateway sends
-`temperature` on every request — it is part of the request contract and of the
-cache key. Pointing `ANTHROPIC_MODEL_STRONG` at one of those models returns:
+Two things to know before pointing these at a different model.
 
-```
-400  `temperature` is deprecated for this model.
-```
+**Sampling parameters.** Newer Anthropic generations removed them, and return
+`400 \`temperature\` is deprecated for this model` if one is sent. The adapter
+handles this: `NO_SAMPLING_PARAMS` in `src/providers/anthropic.ts` lists the
+prefixes that omit `temperature`. Add a prefix there when a new generation
+lands; the rest of the gateway is unaffected, because absorbing vendor
+request-shape differences is what the adapter is for.
 
-Adopting one therefore means dropping `temperature` from the request contract
-or carrying per-model capability flags, not editing a string. Add the id to the
-price table in `src/pricing.ts` at the same time, or the requests price as
-`null`.
+**Thinking models cost more than their per-token price suggests.** Those same
+generations reason before answering, and the reasoning is billed as output
+tokens. Measured on one prompt — *"Name the deepest ocean, one word."*:
+
+| model | output tokens | cost |
+|---|---|---|
+| `claude-sonnet-4-6` | 6 | EUR 0.000124 |
+| `claude-sonnet-5` | 57 | EUR 0.000547 |
+
+Sonnet 5 has the lower list price (USD 2/10 per 1M against 3/15) and still cost
+**4.4x more for the same answer**. Per-token price is the wrong unit; cost per
+completed task is the right one, and the request log is what measures it.
+
+A second consequence: too small a `maxTokens` is spent entirely on reasoning
+and returns a **200 with empty text**, fully billed. Budget for both parts.
+
+Add any new id to the price table in `src/pricing.ts` at the same time, or its
+requests price as `null`.
 
 If neither provider key is set, or `GATEWAY_API_KEY` is missing, the process
 prints the validation errors and exits — it will not start half-configured.

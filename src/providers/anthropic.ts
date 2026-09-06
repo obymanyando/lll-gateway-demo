@@ -15,6 +15,40 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
 /**
+ * Newer Anthropic generations removed the sampling parameters. Sending
+ * `temperature` to one returns:
+ *
+ *   400  `temperature` is deprecated for this model.
+ *
+ * Absorbing that is this adapter's job — the same job it already does for
+ * `system`, which Anthropic takes at the top level and OpenAI takes as a
+ * message. Handling it here keeps one request shape for the rest of the app
+ * and leaves the router free to pick any model, rather than pinning the
+ * gateway to the generation whose request shape happens to match ours.
+ *
+ * Prefixes rather than exact ids: the same models are also addressable as
+ * dated snapshots (`claude-sonnet-5-20260115`), which behave identically.
+ *
+ * Note the caller's `temperature` still enters the cache key even when it is
+ * not sent. Two requests to one of these models differing only in temperature
+ * therefore miss the cache instead of sharing an entry. That is a wasted
+ * lookup, never a wrong answer, so it is left alone rather than teaching the
+ * cache about per-model request shapes.
+ */
+const NO_SAMPLING_PARAMS = [
+  "claude-fable-5",
+  "claude-mythos-5",
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-sonnet-5",
+] as const;
+
+function acceptsTemperature(model: string): boolean {
+  return !NO_SAMPLING_PARAMS.some((prefix) => model.startsWith(prefix));
+}
+
+/**
  * Validate the provider's response instead of trusting it.
  *
  * TS note: `fetch().json()` returns `any` at runtime and `unknown`-ish in
@@ -49,7 +83,7 @@ export class AnthropicProvider implements Provider {
     const body = {
       model,
       max_tokens: req.maxTokens,
-      temperature: req.temperature,
+      ...(acceptsTemperature(model) ? { temperature: req.temperature } : {}),
       ...(req.system !== undefined ? { system: req.system } : {}),
       messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
     };
