@@ -25,9 +25,11 @@ post /v1/chat '{"messages":[{"role":"user","content":"Say good morning in French
 post /v1/chat '{"messages":[{"role":"user","content":"Name the largest planet, one word."}],"maxTokens":30}'
 post /v1/chat '{"messages":[{"role":"user","content":"Name the smallest planet, one word."}],"maxTokens":30}'
 
-# Escalations: one per routing rule.
-post /v1/chat '{"messages":[{"role":"user","content":"One word: yes or no?"}],"tier":"strong","maxTokens":30}'
-post /v1/chat '{"messages":[{"role":"user","content":"Write a haiku about routers."}],"task":"code","maxTokens":60}'
+# Escalations: one per routing rule. The strong tier may be a thinking model,
+# which spends output tokens reasoning before it writes anything — too small a
+# maxTokens returns a 200 with empty text. Budget for both parts.
+post /v1/chat '{"messages":[{"role":"user","content":"One word: yes or no?"}],"tier":"strong","maxTokens":300}'
+post /v1/chat '{"messages":[{"role":"user","content":"Write a haiku about routers."}],"task":"code","maxTokens":300}'
 post /v1/chat '{"messages":[{"role":"user","content":"Summarize in one sentence: '"$(printf 'the quick brown fox jumps over the lazy dog. %.0s' $(seq 1 90))"'"}],"maxTokens":60}'
 
 # The second provider.
