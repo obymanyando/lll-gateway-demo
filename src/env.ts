@@ -35,7 +35,7 @@ const schema = z.object({
   OPENAI_API_KEY: emptyAsUndefined(z.string().min(1).optional()),
 
   // Model names live in config, not in code, so a renamed model is a .env edit.
-  ANTHROPIC_MODEL_CHEAP: z.string().default("claude-haiku-4-5-20251001"),
+  ANTHROPIC_MODEL_CHEAP: z.string().default("claude-haiku-4-5"),
   ANTHROPIC_MODEL_STRONG: z.string().default("claude-sonnet-4-6"),
   OPENAI_MODEL_CHEAP: z.string().default("gpt-4o-mini"),
   OPENAI_MODEL_STRONG: z.string().default("gpt-4o"),

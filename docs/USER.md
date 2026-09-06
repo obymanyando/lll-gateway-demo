@@ -50,10 +50,24 @@ npm run ingest        # chunk + embed rag-docs/*.md, rebuild the chunks table
 | `MONTHLY_BUDGET_EUR` | `25` | no — per-API-key monthly spend ceiling, in EUR |
 | `ANTHROPIC_API_KEY` | — | at least one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is required |
 | `OPENAI_API_KEY` | — | see above — also **required for RAG** (`npm run ingest` and `/v1/rag/query`), even if chat is running entirely on Anthropic, because embeddings are OpenAI-only today |
-| `ANTHROPIC_MODEL_CHEAP` | `claude-haiku-4-5-20251001` | no |
-| `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-4-6` | no |
+| `ANTHROPIC_MODEL_CHEAP` | `claude-haiku-4-5` | no — see the note below before changing |
+| `ANTHROPIC_MODEL_STRONG` | `claude-sonnet-4-6` | no — see the note below before changing |
 | `OPENAI_MODEL_CHEAP` | `gpt-4o-mini` | no |
 | `OPENAI_MODEL_STRONG` | `gpt-4o` | no |
+
+Changing a model id is not always only a config change. Newer Anthropic model
+generations have **removed the sampling parameters**, and this gateway sends
+`temperature` on every request — it is part of the request contract and of the
+cache key. Pointing `ANTHROPIC_MODEL_STRONG` at one of those models returns:
+
+```
+400  `temperature` is deprecated for this model.
+```
+
+Adopting one therefore means dropping `temperature` from the request contract
+or carrying per-model capability flags, not editing a string. Add the id to the
+price table in `src/pricing.ts` at the same time, or the requests price as
+`null`.
 
 If neither provider key is set, or `GATEWAY_API_KEY` is missing, the process
 prints the validation errors and exits — it will not start half-configured.
@@ -203,7 +217,7 @@ Success response (`200`):
   "costEur": 0.000057,
   "routing": {
     "provider": "anthropic",
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-haiku-4-5",
     "tier": "cheap",
     "ruleId": "default-cheap",
     "reason": "no routing rule matched; defaulting to the cheap tier"
@@ -213,6 +227,17 @@ Success response (`200`):
   "latencyMs": 812
 }
 ```
+
+Two different `model` values appear across the API, and they are not always
+the same string. `routing.model` is what the gateway *asked for* — the id from
+config, resolved by the router. Everywhere the provider's own answer is
+reported — `/admin/stats`, the RAG response, and the `model` column in the
+request log — it is what the provider *replied with*, which usually carries a
+version suffix (`claude-haiku-4-5-20251001`, `gpt-4o-mini-2024-07-18`).
+
+That is why the price table is keyed by base id and `priceFor()` falls back to
+the longest matching prefix: the string being priced is the provider's, not
+yours.
 
 `guardrails.verdict` is `"allow"` when nothing fired, or
 `"redact:<rule ids>"` (comma-joined) when one or more rules redacted

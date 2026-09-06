@@ -11,7 +11,7 @@ import type { Usage } from "./types";
  * why the adapters return them instead of hiding them behind an SDK.
  */
 const PRICES_EUR_PER_1K: Record<string, { input: number; output: number }> = {
-  "claude-haiku-4-5-20251001": { input: 0.0009, output: 0.0045 },
+  "claude-haiku-4-5": { input: 0.0009, output: 0.0045 },
   "claude-sonnet-4-6": { input: 0.0027, output: 0.0135 },
   "gpt-4o-mini": { input: 0.00014, output: 0.00055 },
   "gpt-4o": { input: 0.0023, output: 0.009 },
