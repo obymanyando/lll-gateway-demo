@@ -64,18 +64,30 @@ prefixes that omit `temperature`. Add a prefix there when a new generation
 lands; the rest of the gateway is unaffected, because absorbing vendor
 request-shape differences is what the adapter is for.
 
-**Thinking models cost more than their per-token price suggests.** Those same
-generations reason before answering, and the reasoning is billed as output
-tokens. Measured on one prompt — *"Name the deepest ocean, one word."*:
+**Thinking models cost more than their per-token price suggests, and the cost
+is not fixed.** Those generations reason before answering; the reasoning is
+billed as output tokens. Five identical requests, same prompt — *"Name the
+deepest ocean, one word."*, 19 input tokens each:
 
-| model | output tokens | cost |
-|---|---|---|
-| `claude-sonnet-4-6` | 6 | EUR 0.000124 |
-| `claude-sonnet-5` | 57 | EUR 0.000547 |
+| model | thinking by default | output tokens | cost |
+|---|---|---|---|
+| `claude-sonnet-4-6` | no | 6, 6, 6, 6, 6 | EUR 0.000124 every time |
+| `claude-sonnet-5` | **yes** | 42, 57, 51, 111, 86 | EUR 0.000412 - 0.001033 |
 
-Sonnet 5 has the lower list price (USD 2/10 per 1M against 3/15) and still cost
-**4.4x more for the same answer**. Per-token price is the wrong unit; cost per
-completed task is the right one, and the request log is what measures it.
+Two separate findings there. Sonnet 5 has the **lower** list price (USD 2/10 per
+1M against 3/15) and still averaged **~5x the cost** for the same one-word
+answer. And its cost **varied 2.5x across byte-identical requests**, while the
+non-thinking model was exactly repeatable.
+
+So per-token price is the wrong unit, and so is any single measurement. Cost
+per completed task, measured in aggregate, is the right one — which is what the
+request log is for. It also means a per-request cost estimate is not meaningful
+on a thinking model; the budget ceiling is.
+
+`output_config.effort` (`low` through `max`, default `high`) is the lever that
+controls this. The gateway does not currently set it, so the model's default
+applies. Setting it per tier is the obvious next FinOps move and is deliberately
+not built — see [What's next](#whats-next).
 
 A second consequence: too small a `maxTokens` is spent entirely on reasoning
 and returns a **200 with empty text**, fully billed. Budget for both parts.
@@ -622,3 +634,16 @@ something to look at.
 Everything planned is built, cache included. `WALKTHROUGH.md` steps through the
 whole gateway end to end, with the curl command for each capability — start
 there to see it all working.
+
+One lever is knowingly left on the table. On thinking models the largest cost
+control is `output_config.effort`, and the gateway never sets it, so the
+provider default applies to every request. Exposing it — per tier in the
+routing table, or per request alongside `tier` — is the obvious next FinOps
+move, and it is the *only* remaining one that would change the bill rather than
+just report it.
+
+It is unbuilt for the same reason as everything on the cut list: doing it
+properly means deciding whether effort is an operator policy or a caller
+choice, what it does to the cache key, and how it interacts with the budget
+ceiling. That is a design decision, not an afternoon. Measuring the problem
+first — which the request log now does — is the honest order to do it in.
